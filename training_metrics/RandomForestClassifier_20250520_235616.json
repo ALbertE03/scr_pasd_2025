@@ -1,0 +1,429 @@
+{
+  "start_time": 1747799776.638884,
+  "end_time": 1747799782.613872,
+  "total_time": 5.974987983703613,
+  "data_loading_time": 1.1750972270965576,
+  "training_times": {
+    "RandomForestClassifier": 1.7570550441741943
+  },
+  "evaluation_times": {
+    "RandomForestClassifier": 1.0163397789001465
+  },
+  "system_metrics": [
+    {
+      "timestamp": 1747799776.638891,
+      "system": {
+        "cpu": {
+          "percent": 18.0,
+          "count": 8
+        },
+        "memory": {
+          "total": 17179869184,
+          "available": 5562744832,
+          "used": 8682328064,
+          "percent": 67.6
+        },
+        "disk": {
+          "total": 250685575168,
+          "used": 9351868416,
+          "free": 13071990784,
+          "percent": 41.7
+        },
+        "network": {
+          "bytes_sent": 2110261248,
+          "bytes_recv": 4069879808
+        },
+        "process": {
+          "memory_rss": 269266944,
+          "memory_vms": 37840781312
+        }
+      },
+      "ray": {
+        "initialized": true,
+        "dashboard_url": null,
+        "nodes": [
+          {
+            "NodeID": "9c7b5d86ea5d5695f6d6e3612c8ddb52a923237301d563c366e115f3",
+            "Alive": true,
+            "NodeManagerAddress": "127.0.0.1",
+            "NodeManagerHostname": "alberts-Personal-MacBook-Pro.local",
+            "NodeManagerPort": 63932,
+            "ObjectManagerPort": 63931,
+            "ObjectStoreSocketName": "/tmp/ray/session_2025-05-20_23-56-10_364089_80103/sockets/plasma_store",
+            "RayletSocketName": "/tmp/ray/session_2025-05-20_23-56-10_364089_80103/sockets/raylet",
+            "MetricsExportPort": 65123,
+            "NodeName": "127.0.0.1",
+            "RuntimeEnvAgentPort": 64384,
+            "DeathReason": 0,
+            "DeathReasonMessage": "",
+            "alive": true,
+            "Resources": {
+              "memory": 6374744064.0,
+              "object_store_memory": 2147483648.0,
+              "CPU": 8.0,
+              "node:__internal_head__": 1.0,
+              "node:127.0.0.1": 1.0
+            },
+            "Labels": {
+              "ray.io/node_id": "9c7b5d86ea5d5695f6d6e3612c8ddb52a923237301d563c366e115f3"
+            }
+          }
+        ],
+        "node_count": 1,
+        "available_resources": {
+          "object_store_memory": 2147483648.0,
+          "node:__internal_head__": 1.0,
+          "memory": 6374744064.0,
+          "CPU": 8.0,
+          "node:127.0.0.1": 1.0
+        },
+        "total_resources": {
+          "object_store_memory": 2147483648.0,
+          "node:__internal_head__": 1.0,
+          "memory": 6374744064.0,
+          "CPU": 8.0,
+          "node:127.0.0.1": 1.0
+        },
+        "used_resources": {
+          "object_store_memory": 0.0,
+          "node:__internal_head__": 0.0,
+          "memory": 0.0,
+          "CPU": 0.0,
+          "node:127.0.0.1": 0.0
+        }
+      }
+    },
+    {
+      "timestamp": 1747799778.8232162,
+      "system": {
+        "cpu": {
+          "percent": 11.6,
+          "count": 8
+        },
+        "memory": {
+          "total": 17179869184,
+          "available": 5539721216,
+          "used": 8704991232,
+          "percent": 67.8
+        },
+        "disk": {
+          "total": 250685575168,
+          "used": 9351868416,
+          "free": 13072154624,
+          "percent": 41.7
+        },
+        "network": {
+          "bytes_sent": 2110324736,
+          "bytes_recv": 4069941248
+        },
+        "process": {
+          "memory_rss": 273539072,
+          "memory_vms": 37844447232
+        }
+      },
+      "ray": {
+        "initialized": true,
+        "dashboard_url": null,
+        "nodes": [
+          {
+            "NodeID": "9c7b5d86ea5d5695f6d6e3612c8ddb52a923237301d563c366e115f3",
+            "Alive": true,
+            "NodeManagerAddress": "127.0.0.1",
+            "NodeManagerHostname": "alberts-Personal-MacBook-Pro.local",
+            "NodeManagerPort": 63932,
+            "ObjectManagerPort": 63931,
+            "ObjectStoreSocketName": "/tmp/ray/session_2025-05-20_23-56-10_364089_80103/sockets/plasma_store",
+            "RayletSocketName": "/tmp/ray/session_2025-05-20_23-56-10_364089_80103/sockets/raylet",
+            "MetricsExportPort": 65123,
+            "NodeName": "127.0.0.1",
+            "RuntimeEnvAgentPort": 64384,
+            "DeathReason": 0,
+            "DeathReasonMessage": "",
+            "alive": true,
+            "Resources": {
+              "memory": 6374744064.0,
+              "object_store_memory": 2147483648.0,
+              "node:127.0.0.1": 1.0,
+              "node:__internal_head__": 1.0,
+              "CPU": 8.0
+            },
+            "Labels": {
+              "ray.io/node_id": "9c7b5d86ea5d5695f6d6e3612c8ddb52a923237301d563c366e115f3"
+            }
+          }
+        ],
+        "node_count": 1,
+        "available_resources": {
+          "object_store_memory": 2147483648.0,
+          "node:__internal_head__": 1.0,
+          "memory": 6374744064.0,
+          "CPU": 8.0,
+          "node:127.0.0.1": 1.0
+        },
+        "total_resources": {
+          "object_store_memory": 2147483648.0,
+          "node:__internal_head__": 1.0,
+          "memory": 6374744064.0,
+          "CPU": 8.0,
+          "node:127.0.0.1": 1.0
+        },
+        "used_resources": {
+          "object_store_memory": 0.0,
+          "node:__internal_head__": 0.0,
+          "memory": 0.0,
+          "CPU": 0.0,
+          "node:127.0.0.1": 0.0
+        }
+      }
+    },
+    {
+      "timestamp": 1747799779.838225,
+      "system": {
+        "cpu": {
+          "percent": 18.5,
+          "count": 8
+        },
+        "memory": {
+          "total": 17179869184,
+          "available": 5582299136,
+          "used": 8641253376,
+          "percent": 67.5
+        },
+        "disk": {
+          "total": 250685575168,
+          "used": 9351868416,
+          "free": 13072027648,
+          "percent": 41.7
+        },
+        "network": {
+          "bytes_sent": 2110407680,
+          "bytes_recv": 4070027264
+        },
+        "process": {
+          "memory_rss": 274075648,
+          "memory_vms": 37845520384
+        }
+      },
+      "ray": {
+        "initialized": true,
+        "dashboard_url": null,
+        "nodes": [
+          {
+            "NodeID": "9c7b5d86ea5d5695f6d6e3612c8ddb52a923237301d563c366e115f3",
+            "Alive": true,
+            "NodeManagerAddress": "127.0.0.1",
+            "NodeManagerHostname": "alberts-Personal-MacBook-Pro.local",
+            "NodeManagerPort": 63932,
+            "ObjectManagerPort": 63931,
+            "ObjectStoreSocketName": "/tmp/ray/session_2025-05-20_23-56-10_364089_80103/sockets/plasma_store",
+            "RayletSocketName": "/tmp/ray/session_2025-05-20_23-56-10_364089_80103/sockets/raylet",
+            "MetricsExportPort": 65123,
+            "NodeName": "127.0.0.1",
+            "RuntimeEnvAgentPort": 64384,
+            "DeathReason": 0,
+            "DeathReasonMessage": "",
+            "alive": true,
+            "Resources": {
+              "memory": 6374744064.0,
+              "CPU": 8.0,
+              "node:__internal_head__": 1.0,
+              "object_store_memory": 2147483648.0,
+              "node:127.0.0.1": 1.0
+            },
+            "Labels": {
+              "ray.io/node_id": "9c7b5d86ea5d5695f6d6e3612c8ddb52a923237301d563c366e115f3"
+            }
+          }
+        ],
+        "node_count": 1,
+        "available_resources": {
+          "object_store_memory": 2147476664.0,
+          "node:__internal_head__": 1.0,
+          "memory": 6374744064.0,
+          "CPU": 7.0,
+          "node:127.0.0.1": 1.0
+        },
+        "total_resources": {
+          "object_store_memory": 2147483648.0,
+          "node:__internal_head__": 1.0,
+          "memory": 6374744064.0,
+          "CPU": 8.0,
+          "node:127.0.0.1": 1.0
+        },
+        "used_resources": {
+          "object_store_memory": 6984.0,
+          "node:__internal_head__": 0.0,
+          "memory": 0.0,
+          "CPU": 1.0,
+          "node:127.0.0.1": 0.0
+        }
+      }
+    },
+    {
+      "timestamp": 1747799781.6023319,
+      "system": {
+        "cpu": {
+          "percent": 7.5,
+          "count": 8
+        },
+        "memory": {
+          "total": 17179869184,
+          "available": 5666021376,
+          "used": 8557506560,
+          "percent": 67.0
+        },
+        "disk": {
+          "total": 250685575168,
+          "used": 9351868416,
+          "free": 13071839232,
+          "percent": 41.7
+        },
+        "network": {
+          "bytes_sent": 2110514176,
+          "bytes_recv": 4070134784
+        },
+        "process": {
+          "memory_rss": 275644416,
+          "memory_vms": 37845520384
+        }
+      },
+      "ray": {
+        "initialized": true,
+        "dashboard_url": null,
+        "nodes": [
+          {
+            "NodeID": "9c7b5d86ea5d5695f6d6e3612c8ddb52a923237301d563c366e115f3",
+            "Alive": true,
+            "NodeManagerAddress": "127.0.0.1",
+            "NodeManagerHostname": "alberts-Personal-MacBook-Pro.local",
+            "NodeManagerPort": 63932,
+            "ObjectManagerPort": 63931,
+            "ObjectStoreSocketName": "/tmp/ray/session_2025-05-20_23-56-10_364089_80103/sockets/plasma_store",
+            "RayletSocketName": "/tmp/ray/session_2025-05-20_23-56-10_364089_80103/sockets/raylet",
+            "MetricsExportPort": 65123,
+            "NodeName": "127.0.0.1",
+            "RuntimeEnvAgentPort": 64384,
+            "DeathReason": 0,
+            "DeathReasonMessage": "",
+            "alive": true,
+            "Resources": {
+              "memory": 6374744064.0,
+              "CPU": 8.0,
+              "node:__internal_head__": 1.0,
+              "object_store_memory": 2147483648.0,
+              "node:127.0.0.1": 1.0
+            },
+            "Labels": {
+              "ray.io/node_id": "9c7b5d86ea5d5695f6d6e3612c8ddb52a923237301d563c366e115f3"
+            }
+          }
+        ],
+        "node_count": 1,
+        "available_resources": {
+          "object_store_memory": 2147282827.0,
+          "node:__internal_head__": 1.0,
+          "memory": 6374744064.0,
+          "CPU": 8.0,
+          "node:127.0.0.1": 1.0
+        },
+        "total_resources": {
+          "object_store_memory": 2147483648.0,
+          "node:__internal_head__": 1.0,
+          "memory": 6374744064.0,
+          "CPU": 8.0,
+          "node:127.0.0.1": 1.0
+        },
+        "used_resources": {
+          "object_store_memory": 200821.0,
+          "node:__internal_head__": 0.0,
+          "memory": 0.0,
+          "CPU": 0.0,
+          "node:127.0.0.1": 0.0
+        }
+      }
+    },
+    {
+      "timestamp": 1747799782.6138759,
+      "system": {
+        "cpu": {
+          "percent": 7.2,
+          "count": 8
+        },
+        "memory": {
+          "total": 17179869184,
+          "available": 5666758656,
+          "used": 8556384256,
+          "percent": 67.0
+        },
+        "disk": {
+          "total": 250685575168,
+          "used": 9351868416,
+          "free": 13071659008,
+          "percent": 41.7
+        },
+        "network": {
+          "bytes_sent": 2110534656,
+          "bytes_recv": 4070155264
+        },
+        "process": {
+          "memory_rss": 275759104,
+          "memory_vms": 37845463040
+        }
+      },
+      "ray": {
+        "initialized": true,
+        "dashboard_url": null,
+        "nodes": [
+          {
+            "NodeID": "9c7b5d86ea5d5695f6d6e3612c8ddb52a923237301d563c366e115f3",
+            "Alive": true,
+            "NodeManagerAddress": "127.0.0.1",
+            "NodeManagerHostname": "alberts-Personal-MacBook-Pro.local",
+            "NodeManagerPort": 63932,
+            "ObjectManagerPort": 63931,
+            "ObjectStoreSocketName": "/tmp/ray/session_2025-05-20_23-56-10_364089_80103/sockets/plasma_store",
+            "RayletSocketName": "/tmp/ray/session_2025-05-20_23-56-10_364089_80103/sockets/raylet",
+            "MetricsExportPort": 65123,
+            "NodeName": "127.0.0.1",
+            "RuntimeEnvAgentPort": 64384,
+            "DeathReason": 0,
+            "DeathReasonMessage": "",
+            "alive": true,
+            "Resources": {
+              "memory": 6374744064.0,
+              "node:__internal_head__": 1.0,
+              "node:127.0.0.1": 1.0,
+              "object_store_memory": 2147483648.0,
+              "CPU": 8.0
+            },
+            "Labels": {
+              "ray.io/node_id": "9c7b5d86ea5d5695f6d6e3612c8ddb52a923237301d563c366e115f3"
+            }
+          }
+        ],
+        "node_count": 1,
+        "available_resources": {
+          "object_store_memory": 2147282827.0,
+          "node:__internal_head__": 1.0,
+          "memory": 6374744064.0,
+          "CPU": 8.0,
+          "node:127.0.0.1": 1.0
+        },
+        "total_resources": {
+          "object_store_memory": 2147483648.0,
+          "node:__internal_head__": 1.0,
+          "memory": 6374744064.0,
+          "CPU": 8.0,
+          "node:127.0.0.1": 1.0
+        },
+        "used_resources": {
+          "object_store_memory": 200821.0,
+          "node:__internal_head__": 0.0,
+          "memory": 0.0,
+          "CPU": 0.0,
+          "node:127.0.0.1": 0.0
+        }
+      }
+    }
+  ]
+}

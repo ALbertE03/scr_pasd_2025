@@ -1,0 +1,40 @@
+version: '3'
+
+services:
+  ray-head:
+    image: rayproject/ray:latest
+    ports:
+      - "8265:8265"  # Ray dashboard
+      - "10001:10001"  # Ray head node port
+    command: >
+      ray start --head --port=10001 --dashboard-host=0.0.0.0
+    volumes:
+      - ./:/app
+    environment:
+      - RAY_memory_monitor_refresh_ms=0
+  
+  ray-worker:
+    image: rayproject/ray:latest
+    depends_on:
+      - ray-head
+    command: >
+      /bin/bash -c "
+        while ! nc -z ray-head 10001; do
+          echo 'Waiting for Ray head node...';
+          sleep 1;
+        done;
+        ray start --address=ray-head:10001
+      "
+    volumes:
+      - ./:/app
+    deploy:
+      replicas: 2  # Number of worker nodes
+  
+  model-server:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./model_registry:/app/model_registry
+    depends_on:
+      - ray-head
