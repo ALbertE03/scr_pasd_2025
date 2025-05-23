@@ -83,7 +83,7 @@ elif pagina == "Entrenamiento":
     if data_option == "Conjuntos de datos de ejemplo":
         dataset_choice = st.selectbox(
             "Seleccione un conjunto de datos:",
-            ["Iris", "Wine", "Breast Cancer"]
+            ["", "Iris", "Wine", "Breast Cancer"]
         )
         
         try:
@@ -2661,7 +2661,7 @@ elif pagina == "Modelos":
                             try:
                                 model_registry.delete_model(selected_model_id)
                                 st.success(f"Modelo {selected_model_id} eliminado correctamente.")
-                                st.experimental_rerun()
+                                st.rerun()
                             except Exception as e:
                                 st.error(f"Error al eliminar modelo: {str(e)}")
                     
