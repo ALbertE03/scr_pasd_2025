@@ -86,71 +86,181 @@ elif pagina == "Entrenamiento":
             ["", "Iris", "Wine", "Breast Cancer"]
         )
         
-        try:
-            if dataset_choice == "Iris":
-                from sklearn.datasets import load_iris
-                data = load_iris()
-                df = pd.DataFrame(data.data, columns=data.feature_names)
-                df['target'] = data.target
-                target_column = 'target'
-            elif dataset_choice == "Wine":
-                from sklearn.datasets import load_wine
-                data = load_wine()
-                df = pd.DataFrame(data.data, columns=data.feature_names)
-                df['target'] = data.target
-                target_column = 'target'
-            elif dataset_choice == "Breast Cancer":
-                from sklearn.datasets import load_breast_cancer
-                data = load_breast_cancer()
-                df = pd.DataFrame(data.data, columns=data.feature_names)
-                df['target'] = data.target
-                target_column = 'target'
+        if dataset_choice and dataset_choice != "":
+            try:
+                if dataset_choice == "Iris":
+                    from sklearn.datasets import load_iris
+                    data = load_iris()
+                    df = pd.DataFrame(data.data, columns=data.feature_names)
+                    df['target'] = data.target
+                    target_column = 'target'
+                elif dataset_choice == "Wine":
+                    from sklearn.datasets import load_wine
+                    data = load_wine()
+                    df = pd.DataFrame(data.data, columns=data.feature_names)
+                    df['target'] = data.target
+                    target_column = 'target'
+                elif dataset_choice == "Breast Cancer":
+                    from sklearn.datasets import load_breast_cancer
+                    data = load_breast_cancer()
+                    df = pd.DataFrame(data.data, columns=data.feature_names)
+                    df['target'] = data.target
+                    target_column = 'target'
                 
-            st.success(f"Conjunto de datos '{dataset_choice}' cargado correctamente.")
-            st.write(f"Dimensiones: {df.shape[0]} filas, {df.shape[1]} columnas")
-            st.dataframe(df.head(), use_container_width=True)
-            
-        except Exception as e:
-            st.error(f"Error al cargar el conjunto de datos: {str(e)}")
+                if df is not None:
+                    st.success(f"✅ Conjunto de datos '{dataset_choice}' cargado correctamente.")
+                    
+                    # Mostrar información del dataset
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Filas", df.shape[0])
+                    with col2:
+                        st.metric("Columnas", df.shape[1])
+                    with col3:
+                        st.metric("Clases", len(df[target_column].unique()))
+                    
+                    # Vista previa de los datos
+                    st.subheader("Vista previa de los datos")
+                    st.dataframe(df.head(), use_container_width=True)
+                    
+                    # Información adicional sobre el dataset
+                    with st.expander("📊 Información detallada del dataset"):
+                        st.write("**Descripción estadística:**")
+                        st.dataframe(df.describe(), use_container_width=True)
+                        
+                        st.write("**Distribución de clases:**")
+                        class_counts = df[target_column].value_counts()
+                        st.bar_chart(class_counts)
+                
+            except Exception as e:
+                st.error(f"❌ Error al cargar el conjunto de datos: {str(e)}")
+        elif dataset_choice == "":
+            st.info("👆 Por favor, seleccione un conjunto de datos para continuar.")
     
     elif data_option == "Subir archivo CSV":
-        uploaded_file = st.file_uploader("Suba un archivo CSV", type=["csv"])
+        uploaded_file = st.file_uploader(
+            "📁 Suba un archivo CSV", 
+            type=["csv"],
+            help="El archivo debe estar en formato CSV con encabezados de columna."
+        )
         
         if uploaded_file is not None:
             try:
-                df = pd.read_csv(uploaded_file)
-                st.success("Archivo CSV cargado correctamente.")
-                st.write(f"Dimensiones: {df.shape[0]} filas, {df.shape[1]} columnas")
+                # Opciones de carga del CSV
+                with st.expander("⚙️ Opciones avanzadas de carga"):
+                    separator = st.selectbox("Separador", [",", ";", "\t"], index=0)
+                    encoding = st.selectbox("Codificación", ["utf-8", "latin-1", "iso-8859-1"], index=0)
+                    
+                df = pd.read_csv(uploaded_file, sep=separator, encoding=encoding)
+                
+                st.success("✅ Archivo CSV cargado correctamente.")
+                
+                # Mostrar métricas del archivo
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Filas", df.shape[0])
+                with col2:
+                    st.metric("Columnas", df.shape[1])
+                with col3:
+                    st.metric("Tamaño", f"{uploaded_file.size / 1024:.1f} KB")
+                
+                # Vista previa de los datos
+                st.subheader("Vista previa de los datos")
                 st.dataframe(df.head(), use_container_width=True)
                 
-                # Seleccionar columna objetivo
-                target_column = st.selectbox(
-                    "Seleccione la columna objetivo:",
-                    df.columns.tolist()
-                )
+                # Verificar que hay columnas disponibles
+                if len(df.columns) > 1:
+                    # Seleccionar columna objetivo
+                    st.subheader("🎯 Selección de variable objetivo")
+                    target_column = st.selectbox(
+                        "Seleccione la columna objetivo:",
+                        df.columns.tolist(),
+                        help="Esta será la variable que el modelo intentará predecir."
+                    )
+                    
+                    # Mostrar información sobre la columna objetivo
+                    if target_column:
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.write("**Tipo de variable:**", df[target_column].dtype)
+                            st.write("**Valores únicos:**", df[target_column].nunique())
+                        with col2:
+                            if df[target_column].nunique() <= 10:
+                                st.write("**Distribución de valores:**")
+                                st.bar_chart(df[target_column].value_counts())
+                else:
+                    st.error("❌ El archivo debe tener al menos 2 columnas (características + objetivo).")
+                    df = None
                 
             except Exception as e:
-                st.error(f"Error al cargar el archivo CSV: {str(e)}")
+                st.error(f"❌ Error al cargar el archivo CSV: {str(e)}")
+                st.info("💡 Verifique que el archivo esté en formato CSV válido y tenga encabezados de columna.")
+                df = None
     
     elif data_option == "Ingresar ruta a un archivo":
-        file_path = st.text_input("Introduzca la ruta completa al archivo CSV:")
+        st.info("💡 Esta opción es útil cuando trabaja con archivos en el servidor o rutas de red.")
+        
+        file_path = st.text_input(
+            "📂 Introduzca la ruta completa al archivo CSV:",
+            placeholder="Ejemplo: /app/data/mi_dataset.csv"
+        )
         
         if file_path:
             try:
                 if os.path.exists(file_path):
-                    df = pd.read_csv(file_path)
-                    st.success(f"Archivo CSV cargado desde '{file_path}'.")
-                    st.write(f"Dimensiones: {df.shape[0]} filas, {df.shape[1]} columnas")
+                    # Opciones de carga del CSV
+                    with st.expander("⚙️ Opciones avanzadas de carga"):
+                        separator = st.selectbox("Separador", [",", ";", "\t"], index=0, key="path_sep")
+                        encoding = st.selectbox("Codificación", ["utf-8", "latin-1", "iso-8859-1"], index=0, key="path_enc")
+                    
+                    df = pd.read_csv(file_path, sep=separator, encoding=encoding)
+                    
+                    st.success(f"✅ Archivo CSV cargado desde '{file_path}'.")
+                    
+                    # Mostrar métricas del archivo
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Filas", df.shape[0])
+                    with col2:
+                        st.metric("Columnas", df.shape[1])
+                    with col3:
+                        file_size = os.path.getsize(file_path) / 1024
+                        st.metric("Tamaño", f"{file_size:.1f} KB")
+                    
+                    # Vista previa de los datos
+                    st.subheader("Vista previa de los datos")
                     st.dataframe(df.head(), use_container_width=True)
                     
-                    # Seleccionar columna objetivo
-                    target_column = st.selectbox(
-                        "Seleccione la columna objetivo:",
-                        df.columns.tolist()
-                    )
+                    # Verificar que hay columnas disponibles
+                    if len(df.columns) > 1:
+                        # Seleccionar columna objetivo
+                        st.subheader("🎯 Selección de variable objetivo")
+                        target_column = st.selectbox(
+                            "Seleccione la columna objetivo:",
+                            df.columns.tolist(),
+                            help="Esta será la variable que el modelo intentará predecir.",
+                            key="path_target"
+                        )
+                        
+                        # Mostrar información sobre la columna objetivo
+                        if target_column:
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.write("**Tipo de variable:**", df[target_column].dtype)
+                                st.write("**Valores únicos:**", df[target_column].nunique())
+                            with col2:
+                                if df[target_column].nunique() <= 10:
+                                    st.write("**Distribución de valores:**")
+                                    st.bar_chart(df[target_column].value_counts())
+                    else:
+                        st.error("❌ El archivo debe tener al menos 2 columnas (características + objetivo).")
+                        df = None
                 else:
-                    st.error(f"El archivo '{file_path}' no existe.")
+                    st.error(f"❌ El archivo '{file_path}' no existe.")
+                    st.info("💡 Verifique que la ruta sea correcta y que tenga permisos de lectura.")
             except Exception as e:
+                st.error(f"❌ Error al cargar el archivo CSV: {str(e)}")
+                st.info("💡 Verifique que el archivo esté en formato CSV válido y tenga encabezados de columna.")
                 st.error(f"Error al cargar el archivo CSV: {str(e)}")
     
     # Continuar con el proceso de entrenamiento si se ha cargado un dataset

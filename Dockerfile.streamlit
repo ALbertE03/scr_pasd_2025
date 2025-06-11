@@ -1,0 +1,50 @@
+# Dockerfile optimizado para Streamlit con bajo consumo de recursos
+FROM python:3.9-slim
+
+# Instalar dependencias del sistema mínimas
+RUN apt-get update && apt-get install -y \
+    curl \
+    netcat-openbsd \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copiar y instalar dependencias de Python
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# Copiar código de la aplicación
+COPY . .
+
+# Crear directorios necesarios
+RUN mkdir -p model_registry data temp
+
+# Configurar Streamlit para producción
+RUN mkdir -p ~/.streamlit
+RUN echo "\
+[general]\n\
+email = \"\"\n\
+\n\
+[server]\n\
+headless = true\n\
+enableCORS = false\n\
+enableXsrfProtection = false\n\
+maxUploadSize = 200\n\
+\n\
+[browser]\n\
+gatherUsageStats = false\n\
+" > ~/.streamlit/config.toml
+
+# Exponer puerto de Streamlit
+EXPOSE 8501
+
+# Variables de entorno para optimización
+ENV PYTHONUNBUFFERED=1
+ENV STREAMLIT_SERVER_HEADLESS=true
+ENV STREAMLIT_SERVER_ENABLE_CORS=false
+ENV STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
+
+# Comando de inicio optimizado
+CMD ["streamlit", "run", "streamlit_app.py", "--server.port=8501", "--server.address=0.0.0.0", "--server.headless=true", "--server.enableCORS=false", "--browser.gatherUsageStats=false"]
