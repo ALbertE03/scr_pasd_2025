@@ -1,0 +1,30 @@
+services:
+  ray-external-worker:
+    build: .
+    hostname: ray-external-worker"
+    networks:
+      - nuevacarpeta_ray-network
+    environment:
+      - RAY_HEAD_SERVICE_HOST=ray-head
+    shm_size: 2gb
+    command: >
+      bash -c "
+      echo 'Worker externo iniciando...' &&
+      echo 'Conectando al cluster existente...' &&
+      ray start 
+      --address=ray-head:6379 
+      --num-cpus=2 
+      --object-manager-port=8076
+      --node-manager-port=8077 
+      --min-worker-port=10002 
+      --max-worker-port=19999 
+      --redis-password= &&
+      echo 'Worker externo conectado!' && python train.py
+      "
+    volumes:
+      - .:/app
+    restart: unless-stopped
+
+networks:
+  nuevacarpeta_ray-network:
+    external: true

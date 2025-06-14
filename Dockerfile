@@ -1,19 +1,25 @@
-FROM python:3.9-slim
+# Use an official Python runtime as a parent image
+FROM python:3.12-slim
 
+# Set the working directory in the container
 WORKDIR /app
 
-# Install dependencies
+# Copy the requirements file into the container
 COPY requirements.txt .
+
+# Upgrade pip first
+RUN pip install --upgrade pip
+
+# Install any needed packages specified in requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
+# Install additional packages needed for Ray dashboard
+RUN apt-get update && apt-get install -y procps net-tools && apt-get clean
+
+# Copy the current directory contents into the container
 COPY . .
 
-# Create directories for model registry
-RUN mkdir -p model_registry
+# Expose Ray Dashboard port, Ray head port, and GCS port
+EXPOSE 8265 10001 6379
 
-# Expose the port for the API
-EXPOSE 8000
-
-# Command to run the application
-CMD ["python", "-m", "server.model_server"]
+CMD [ "python","train.py" ]

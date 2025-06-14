@@ -1,0 +1,85 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Start Ray Cluster (Docker Compose)",
+			"type": "shell",
+			"command": "powershell.exe",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}/start_ray_cluster.ps1"
+			],
+			"group": "build",
+			"problemMatcher": []
+		},
+		{
+			"label": "Stop Ray Cluster",
+			"type": "shell",
+			"command": "powershell.exe",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}/stop_ray_cluster.ps1"
+			],
+			"group": "build",
+			"problemMatcher": []
+		},
+		{
+			"label": "Run ML Training on Cluster",
+			"type": "shell",
+			"command": "powershell.exe",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}/run_training_cluster.ps1"
+			],
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			},
+			"problemMatcher": []
+		},
+		{
+			"label": "Add External Worker",
+			"type": "shell",
+			"command": "powershell.exe",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}/add_external_worker.ps1"
+			],
+			"group": "build",
+			"problemMatcher": []
+		},
+		{
+			"label": "Docker Compose Up",
+			"type": "shell",
+			"command": "docker-compose",
+			"args": ["up", "-d"],
+			"group": "build",
+			"problemMatcher": []
+		},
+		{
+			"label": "Docker Compose Down",
+			"type": "shell",
+			"command": "docker-compose",
+			"args": ["down"],
+			"group": "build",
+			"problemMatcher": []
+		},
+		{
+			"label": "View Cluster Logs",
+			"type": "shell",
+			"command": "docker-compose",
+			"args": ["logs", "-f"],
+			"group": "build",
+			"isBackground": true,
+			"problemMatcher": []
+		}
+	]
+}
