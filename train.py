@@ -15,51 +15,101 @@ from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 import pickle
 import os
+import threading
+import logging
+from typing import Dict, List, Any, Optional
 
 
-@ray.remote
-def train_model_remote(model, model_name, X_train, y_train, X_test, y_test):
-    """Entrena un modelo de forma remota"""
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+@ray.remote(max_retries=3, retry_exceptions=True)
+def train_model_remote(model, model_name, X_train, y_train, X_test, y_test, node_id=None):
+    """Entrena un modelo de forma remota con tolerancia a fallos"""
     start_time = time.time()
     
-    # Entrenar el modelo
-    model.fit(X_train, y_train)
+    try:
+        logger.info(f"Iniciando entrenamiento de {model_name} en nodo {node_id}")
+        
+        # Entrenar el modelo
+        model.fit(X_train, y_train)
+        
+        # Hacer predicciones
+        y_pred = model.predict(X_test)
+        accuracy = accuracy_score(y_test, y_pred)
+        
+        # Calcular cross-validation score
+        cv_scores = cross_val_score(model, X_train, y_train, cv=5)
+        
+        training_time = time.time() - start_time
+        
+        logger.info(f"Entrenamiento de {model_name} completado exitosamente en {training_time:.2f}s")
+        
+        return {
+            'model_name': model_name,
+            'model': model,
+            'accuracy': accuracy,
+            'cv_mean': cv_scores.mean(),
+            'cv_std': cv_scores.std(),
+            'training_time': training_time,
+            'predictions': y_pred.tolist(),
+            'confusion_matrix': confusion_matrix(y_test, y_pred).tolist(),
+            'classification_report': classification_report(y_test, y_pred, output_dict=True),
+            'timestamp': datetime.now().isoformat(),
+            'node_id': node_id,
+            'status': 'success'
+        }
     
-    # Hacer predicciones
-    y_pred = model.predict(X_test)
-    accuracy = accuracy_score(y_test, y_pred)
-    
-    # Calcular cross-validation score
-    cv_scores = cross_val_score(model, X_train, y_train, cv=5)
-    
-    training_time = time.time() - start_time
-    
-    return {
-        'model_name': model_name,
-        'model': model,
-        'accuracy': accuracy,
-        'cv_mean': cv_scores.mean(),
-        'cv_std': cv_scores.std(),
-        'training_time': training_time,
-        'predictions': y_pred.tolist(),
-        'confusion_matrix': confusion_matrix(y_test, y_pred).tolist(),
-        'classification_report': classification_report(y_test, y_pred, output_dict=True),
-        'timestamp': datetime.now().isoformat()
-    }
+    except Exception as e:
+        logger.error(f"Error entrenando {model_name} en nodo {node_id}: {str(e)}")
+        return {
+            'model_name': model_name,
+            'status': 'failed',
+            'error': str(e),
+            'node_id': node_id,
+            'timestamp': datetime.now().isoformat()
+        }
 
 
 class DistributedMLTrainer:
-    def __init__(self, head_address=None):
-        """Inicializa el entrenador distribuido de ML"""
-        if not ray.is_initialized():
-            if head_address:
-                ray.init(address=head_address)
-            else:
-                ray.init()
-        
+    def __init__(self, head_address=None, enable_fault_tolerance=True):
+        """Inicializa el entrenador distribuido de ML con tolerancia a fallos"""
+        self.enable_fault_tolerance = enable_fault_tolerance
         self.results = {}
         self.trained_models = {}
+        self.failed_tasks = []
+        self.cluster_nodes = []
         
+        # Configurar Ray con tolerancia a fallos
+        if not ray.is_initialized():
+            ray_config = {
+                "num_cpus": None,  # Autodescubrimiento
+                "ignore_reinit_error": True,
+                "_enable_object_reconstruction": True,  # Tolerancia a fallos
+                "_reconstruction_timeout": 30
+            }
+            
+            if head_address:
+                ray_config["address"] = head_address
+                logger.info(f"Conectando a cluster Ray en: {head_address}")
+            else:
+                logger.info("Iniciando Ray en modo local con autodescubrimiento")
+            
+            ray.init(**ray_config)
+        
+        # Obtener información inicial del cluster
+        self._update_cluster_info()
+        
+    def _update_cluster_info(self):
+        """Actualiza información del cluster para autodescubrimiento"""
+        try:
+            self.cluster_nodes = ray.nodes()
+            alive_nodes = [node for node in self.cluster_nodes if node.get('Alive', False)]
+            logger.info(f"Cluster autodescubierto: {len(alive_nodes)} nodos vivos de {len(self.cluster_nodes)} totales")
+        except Exception as e:
+            logger.warning(f"Error actualizando información del cluster: {e}")
+    
     def get_available_datasets(self):
         """Retorna los datasets disponibles"""
         return {
@@ -80,14 +130,21 @@ class DistributedMLTrainer:
             'SVM': SVC(random_state=42),
             'KNN': KNeighborsClassifier(),
             'DecisionTree': DecisionTreeClassifier(random_state=42),
-            'NaiveBayes': GaussianNB()        }
-
+            'NaiveBayes': GaussianNB()
+        } 
+           
     def train_models_distributed(self, dataset_name='iris', selected_models=None, test_size=0.3):
-        """Entrena múltiples modelos de forma distribuida"""
-        print(f"Iniciando entrenamiento distribuido con dataset: {dataset_name}")
+        """Entrena múltiples modelos de forma distribuida con tolerancia a fallos"""
+        logger.info(f"Iniciando entrenamiento distribuido con dataset: {dataset_name}")
+        
+        # Actualizar información del cluster
+        self._update_cluster_info()
         
         # Cargar dataset
         datasets = self.get_available_datasets()
+        if dataset_name not in datasets:
+            raise ValueError(f"Dataset {dataset_name} no disponible. Opciones: {list(datasets.keys())}")
+            
         dataset = datasets[dataset_name]
         X, y = dataset.data, dataset.target
         
@@ -96,45 +153,105 @@ class DistributedMLTrainer:
             X, y, test_size=test_size, random_state=42, stratify=y
         )
         
-        print(f"Datos divididos: {X_train.shape[0]} entrenamiento, {X_test.shape[0]} prueba")
+        logger.info(f"Datos divididos: {X_train.shape[0]} entrenamiento, {X_test.shape[0]} prueba")
         
         # Obtener modelos
         available_models = self.get_available_models()
         if selected_models is None:
             selected_models = list(available_models.keys())
-          # Crear tareas remotas
+        
+        # Crear tareas remotas con tolerancia a fallos
         remote_tasks = []
-        for model_name in selected_models:
+        task_info = {}
+        
+        for i, model_name in enumerate(selected_models):
             if model_name in available_models:
                 model = available_models[model_name]
+                node_id = f"node_{i % len(self.cluster_nodes)}" if self.cluster_nodes else f"node_{i}"
+                
                 task = train_model_remote.remote(
-                    model, model_name, X_train, y_train, X_test, y_test
+                    model, model_name, X_train, y_train, X_test, y_test, node_id
                 )
                 remote_tasks.append(task)
+                task_info[task] = {'model_name': model_name, 'node_id': node_id}
         
-        print(f"Ejecutando {len(remote_tasks)} entrenamientos en paralelo...")
+        logger.info(f"Ejecutando {len(remote_tasks)} entrenamientos en paralelo con tolerancia a fallos...")
         
-        # Ejecutar tareas y obtener resultados
-        results = ray.get(remote_tasks)
+        # Ejecutar tareas con manejo de fallos
+        results = []
+        failed_results = []
         
-        # Procesar resultados
+        try:
+            # Obtener resultados con timeout
+            completed_results = ray.get(remote_tasks, timeout=300)  # 5 minutos timeout
+            
+            for result in completed_results:
+                if result.get('status') == 'success':
+                    results.append(result)
+                else:
+                    failed_results.append(result)
+                    
+        except ray.exceptions.GetTimeoutError:
+            logger.warning("Timeout en algunas tareas, recuperando resultados parciales...")
+            ready_tasks, remaining_tasks = ray.wait(remote_tasks, num_returns=len(remote_tasks), timeout=0)
+            
+            for task in ready_tasks:
+                try:
+                    result = ray.get(task)
+                    if result.get('status') == 'success':
+                        results.append(result)
+                    else:
+                        failed_results.append(result)
+                except Exception as e:
+                    failed_results.append({
+                        'model_name': task_info[task]['model_name'],
+                        'status': 'failed',
+                        'error': str(e),
+                        'node_id': task_info[task]['node_id']
+                    })
+            
+            # Cancelar tareas restantes
+            for task in remaining_tasks:
+                ray.cancel(task)
+        
+        except Exception as e:
+            logger.error(f"Error durante ejecución distribuida: {e}")
+            return {}
+        
+        # Procesar resultados exitosos
         for result in results:
             self.results[result['model_name']] = result
             self.trained_models[result['model_name']] = result['model']
         
-        # Ordenar por accuracy
-        sorted_results = sorted(
-            self.results.items(), 
-            key=lambda x: x[1]['accuracy'], 
-            reverse=True
-        )
+        # Registrar fallos
+        self.failed_tasks.extend(failed_results)
         
-        print("\n Resultados del entrenamiento distribuido:")
-        print("=" * 60)
-        for model_name, result in sorted_results:
-            print(f"{model_name:20} | Accuracy: {result['accuracy']:.4f} | "
-                  f"CV: {result['cv_mean']:.4f}±{result['cv_std']:.4f} | "
-                  f"Tiempo: {result['training_time']:.2f}s")
+        # Mostrar estadísticas de tolerancia a fallos
+        total_tasks = len(selected_models)
+        successful_tasks = len(results)
+        failed_tasks = len(failed_results)
+        
+        logger.info(f"Tolerancia a fallos - Exitosos: {successful_tasks}/{total_tasks}, Fallos: {failed_tasks}")
+        
+        if failed_results:
+            logger.warning("Tareas fallidas:")
+            for failed in failed_results:
+                logger.warning(f"  - {failed['model_name']}: {failed.get('error', 'Error desconocido')}")
+        
+        # Ordenar por accuracy
+        if results:
+            sorted_results = sorted(
+                self.results.items(), 
+                key=lambda x: x[1]['accuracy'], 
+                reverse=True
+            )
+            
+            logger.info("\nResultados del entrenamiento distribuido:")
+            logger.info("=" * 60)
+            for model_name, result in sorted_results:
+                logger.info(f"{model_name:20} | Accuracy: {result['accuracy']:.4f} | "
+                          f"CV: {result['cv_mean']:.4f}±{result['cv_std']:.4f} | "
+                          f"Tiempo: {result['training_time']:.2f}s | Nodo: {result.get('node_id', 'N/A')}")
         
         return self.results
     
@@ -164,34 +281,155 @@ class DistributedMLTrainer:
     def get_cluster_info(self):
         """Obtiene información del cluster Ray"""
         return ray.cluster_resources()
+    
+    def train_multiple_datasets_sequential(self, datasets_list=None, selected_models=None, test_size=0.3):
+        """Entrena múltiples datasets secuencialmente en una misma ejecución"""
+        if datasets_list is None:
+            datasets_list = ['iris', 'wine', 'breast_cancer']
+        
+        if selected_models is None:
+            selected_models = ['RandomForest', 'GradientBoosting', 'LogisticRegression', 'SVM']
+        
+        all_results = {}
+        execution_summary = {
+            'total_datasets': len(datasets_list),
+            'successful_datasets': 0,
+            'failed_datasets': 0,
+            'total_models_trained': 0,
+            'total_execution_time': 0,
+            'start_time': datetime.now().isoformat()
+        }
+        
+        start_time = time.time()
+        logger.info(f"Iniciando entrenamiento secuencial de {len(datasets_list)} datasets")
+        logger.info(f"Datasets: {datasets_list}")
+        logger.info(f"Modelos por dataset: {selected_models}")
+        
+        for dataset_name in datasets_list:
+            dataset_start_time = time.time()
+            logger.info(f"\n{'='*20} PROCESANDO DATASET: {dataset_name.upper()} {'='*20}")
+            
+            try:
+                # Limpiar resultados anteriores para este dataset
+                self.results = {}
+                self.trained_models = {}
+                
+                # Entrenar modelos para este dataset
+                dataset_results = self.train_models_distributed(
+                    dataset_name=dataset_name,
+                    selected_models=selected_models,
+                    test_size=test_size
+                )
+                
+                if dataset_results:
+                    all_results[dataset_name] = dataset_results
+                    execution_summary['successful_datasets'] += 1
+                    execution_summary['total_models_trained'] += len(dataset_results)
+                    
+                    # Guardar resultados de este dataset
+                    self.save_results(f"results_{dataset_name}.json")
+                    self.save_models(f"models_{dataset_name}")
+                    
+                    dataset_time = time.time() - dataset_start_time
+                    logger.info(f"Dataset {dataset_name} completado en {dataset_time:.2f}s")
+                    
+                    # Mostrar mejor modelo para este dataset
+                    best_model = max(dataset_results.items(), key=lambda x: x[1]['accuracy'])
+                    logger.info(f"Mejor modelo para {dataset_name}: {best_model[0]} "
+                              f"(Accuracy: {best_model[1]['accuracy']:.4f})")
+                
+                else:
+                    execution_summary['failed_datasets'] += 1
+                    logger.error(f"Falló el entrenamiento para dataset {dataset_name}")
+                
+            except Exception as e:
+                execution_summary['failed_datasets'] += 1
+                logger.error(f"Error procesando dataset {dataset_name}: {str(e)}")
+                continue
+        
+        total_time = time.time() - start_time
+        execution_summary['total_execution_time'] = total_time
+        execution_summary['end_time'] = datetime.now().isoformat()
+        
+        # Guardar resumen de ejecución
+        with open("execution_summary.json", 'w') as f:
+            json.dump(execution_summary, f, indent=2)
+        
+        # Mostrar resumen final
+        logger.info(f"\n{'='*50}")
+        logger.info("RESUMEN DE EJECUCIÓN SECUENCIAL")
+        logger.info(f"{'='*50}")
+        logger.info(f"Datasets procesados exitosamente: {execution_summary['successful_datasets']}/{execution_summary['total_datasets']}")
+        logger.info(f"Datasets fallidos: {execution_summary['failed_datasets']}")
+        logger.info(f"Total de modelos entrenados: {execution_summary['total_models_trained']}")
+        logger.info(f"Tiempo total de ejecución: {total_time:.2f}s")
+        
+        if self.failed_tasks:
+            logger.info(f"Total de tareas individuales fallidas: {len(self.failed_tasks)}")
+        
+        return all_results, execution_summary
+    
+    def get_fault_tolerance_stats(self):
+        """Obtiene estadísticas de tolerancia a fallos"""
+        return {
+            'failed_tasks': len(self.failed_tasks),
+            'failed_task_details': self.failed_tasks,
+            'cluster_nodes': len(self.cluster_nodes),
+            'alive_nodes': len([node for node in self.cluster_nodes if node.get('Alive', False)])
+        }
 
 
 def main():
-    """Función principal para ejecutar el entrenamiento"""
-    print("Iniciando entrenador distribuido de Machine Learning")
+    """Función principal para ejecutar el entrenamiento con tolerancia a fallos"""
+    logger.info("Iniciando entrenador distribuido de Machine Learning con tolerancia a fallos")
     
-    # Inicializar entrenador
-    trainer = DistributedMLTrainer()
+    # Inicializar entrenador con tolerancia a fallos
+    trainer = DistributedMLTrainer(enable_fault_tolerance=True)
     
     # Mostrar información del cluster
     cluster_info = trainer.get_cluster_info()
-    print(f"Recursos del cluster: {cluster_info}")
+    logger.info(f"Recursos del cluster autodescubierto: {cluster_info}")
     
-    # Entrenar modelos con diferentes datasets
-    datasets = ['iris', 'wine', 'breast_cancer']
+    # 🚀 IMPLEMENTACIÓN: Entrenamiento Secuencial de Múltiples Datasets
+    logger.info("\n🚀 MODO: Entrenamiento Secuencial de Múltiples Datasets")
     
-    for dataset in datasets:
-        print(f"\n{'='*20} DATASET: {dataset.upper()} {'='*20}")
-        results = trainer.train_models_distributed(
-            dataset_name=dataset,
-            selected_models=['RandomForest', 'GradientBoosting', 'LogisticRegression', 'SVM']
-        )
+    datasets_to_train = ['iris', 'wine', 'breast_cancer']
+    models_to_use = ['RandomForest', 'GradientBoosting', 'LogisticRegression', 'SVM', 'KNN']
+    
+    all_results, summary = trainer.train_multiple_datasets_sequential(
+        datasets_list=datasets_to_train,
+        selected_models=models_to_use
+    )
+    
+    # Mostrar estadísticas de tolerancia a fallos
+    fault_stats = trainer.get_fault_tolerance_stats()
+    logger.info(f"\n📊 ESTADÍSTICAS DE TOLERANCIA A FALLOS:")
+    logger.info(f"Nodos en cluster: {fault_stats['cluster_nodes']}")
+    logger.info(f"Nodos vivos: {fault_stats['alive_nodes']}")
+    logger.info(f"Tareas fallidas: {fault_stats['failed_tasks']}")
+    
+    if fault_stats['failed_tasks'] > 0:
+        logger.info("Detalles de tareas fallidas:")
+        for failed_task in fault_stats['failed_task_details']:
+            logger.info(f"  - {failed_task['model_name']}: {failed_task.get('error', 'Error desconocido')}")
+    
+    # Generar reporte comparativo entre datasets
+    if all_results:
+        logger.info(f"\n📈 COMPARACIÓN ENTRE DATASETS:")
+        logger.info("-" * 80)
+        logger.info(f"{'Dataset':<15} {'Mejor Modelo':<20} {'Accuracy':<10} {'Tiempo Avg':<12}")
+        logger.info("-" * 80)
         
-        # Guardar resultados
-        trainer.save_results(f"results_{dataset}.json")
-        trainer.save_models(f"models_{dataset}")
+        for dataset_name, results in all_results.items():
+            if results:
+                best_model = max(results.items(), key=lambda x: x[1]['accuracy'])
+                avg_time = sum(r['training_time'] for r in results.values()) / len(results)
+                logger.info(f"{dataset_name:<15} {best_model[0]:<20} {best_model[1]['accuracy']:<10.4f} {avg_time:<12.2f}")
     
-    print("\nEntrenamiento distribuido completado!")
+    logger.info("\n✅ Entrenamiento distribuido completado con tolerancia a fallos!")
+    logger.info(f"📁 Resultados guardados en archivos results_*.json")
+    logger.info(f"🤖 Modelos guardados en directorios models_*")
+    logger.info(f"📊 Resumen de ejecución guardado en execution_summary.json")
 
 
 if __name__ == "__main__":

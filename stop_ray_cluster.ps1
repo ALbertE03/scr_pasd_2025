@@ -1,7 +1,7 @@
 # Script para iniciar el cluster Ray con Docker Compose
 # Usage: .\start_ray_cluster.ps1
 
-Write-Host "=== Iniciando Cluster Ray con Docker Compose ===" -ForegroundColor Green
+Write-Host "=== Desactivando Cluster Ray con Docker Compose ===" -ForegroundColor Green
 
 # Verificar si Docker está ejecutándose
 try {
