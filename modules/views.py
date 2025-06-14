@@ -95,8 +95,7 @@ def render_training_tab(cluster_status):
     with training_tabs[0]:
         render_advanced_training(cluster_status)
         
-    with training_tabs[1]:
-        render_basic_training(cluster_status)
+
         
     with training_tabs[2]:
         render_realtime_metrics()
@@ -133,7 +132,6 @@ def render_advanced_training(cluster_status):
             "LogisticRegression",
             "KNN", 
             "DecisionTree", 
-            "NeuralNetwork", 
             "XGBoost"
         ]
         
@@ -168,16 +166,7 @@ def render_advanced_training(cluster_status):
             value=True,
             key="advanced_show_progress_checkbox"
         )
-          # Convertir todos los valores a enteros para evitar error de tipos incompatibles
-        cpu_count = int(max(cluster_status['total_cpus'], 1))
-        num_parallel_tasks = st.slider(
-            "Tareas Paralelas",
-            min_value=1,
-            max_value=cpu_count,
-            value=min(4, cpu_count),
-            key="advanced_parallel_tasks_slider"
-        )
-    
+         
     # Sección de Hiperparámetros
     with st.expander("⚙️ Configuración de Hiperparámetros"):
         st.caption("Configure hiperparámetros específicos para cada modelo seleccionado")
@@ -293,13 +282,6 @@ def render_advanced_training(cluster_status):
                 # Guardar resultados
                 st.session_state.last_trained_dataset = selected_dataset
                 st.session_state.last_training_history = training_history
-
-def render_basic_training(cluster_status):
-    """Renderiza la interfaz básica de entrenamiento"""
-    st.subheader("🔄 Entrenamiento Básico")
-    
-    # Resto del código del entrenamiento básico se mantiene...
-    # (Placeholder para la implementación existente)
 
 def render_realtime_metrics():
     """Renderiza métricas en tiempo real de modelos en producción"""
@@ -982,3 +964,109 @@ def render_fault_tolerance_tab():
                 margin=dict(l=20, r=20, t=60, b=40)
             )
             st.plotly_chart(fig, use_container_width=True)
+
+def plot_training_metrics(training_history, chart_prefix=""):
+    """Visualiza métricas de rendimiento de los modelos"""
+    if not training_history or not isinstance(training_history, dict):
+        st.warning("No hay datos de historial de entrenamiento disponibles")
+        return
+    
+    # Preparamos los datos para gráficas de barras comparativas
+    metrics_data = []
+    
+    for model_name, history in training_history.items():
+        if not history or not isinstance(history, dict):
+            continue
+        
+        # Solo procesar si hay métricas disponibles
+        if 'accuracy' not in history or history['accuracy'] is None:
+            continue
+            
+        # Crear un registro para este modelo
+        entry = {
+            'Model': model_name,
+            'Accuracy': float(history.get('accuracy', 0)),
+            'Val_Accuracy': float(history.get('val_accuracy', 0)),
+            'Loss': float(history.get('loss', 0)),
+            'Val_Loss': float(history.get('val_loss', 0))
+        }
+        
+        # Normalizar valores de accuracy
+        if entry['Accuracy'] > 1:
+            entry['Accuracy'] = min(1.0, entry['Accuracy'] / 100)
+        if entry['Val_Accuracy'] > 1:
+            entry['Val_Accuracy'] = min(1.0, entry['Val_Accuracy'] / 100)
+            
+        metrics_data.append(entry)
+    
+    if not metrics_data:
+        st.warning("No hay suficientes datos de historial para visualizar")
+        return
+        
+    df = pd.DataFrame(metrics_data)
+    
+    # Mostrar información del DataFrame para depuración
+    with st.expander("Información del DataFrame generado", expanded=False):
+        st.write("Columnas disponibles:", df.columns.tolist())
+        st.write("Número de filas:", len(df))
+        st.write("Valores únicos en 'Model':", df['Model'].unique().tolist())
+        st.write("Datos completos:")
+        st.write(df)
+    
+    # Crear columnas para los gráficos
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Gráfico de precisión (barras)
+        fig_accuracy = px.bar(
+            df,
+            x="Model",
+            y=["Accuracy", "Val_Accuracy"],
+            title="Comparación de Precisión entre Modelos",
+            labels={"value": "Precisión", "variable": "Tipo"},
+            barmode="group",
+            color_discrete_sequence=px.colors.qualitative.Bold
+        )
+        
+        # Configurar aspecto
+        fig_accuracy.update_layout(
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            xaxis=dict(title="Modelo"),
+            yaxis=dict(title="Precisión", tickformat=".0%", range=[0, 1]),
+            plot_bgcolor="rgba(0,0,0,0)",
+            xaxis_gridcolor="rgba(0,0,0,0.1)",
+            yaxis_gridcolor="rgba(0,0,0,0.1)",
+            height=400,
+            margin=dict(l=20, r=20, t=60, b=40)
+        )
+        
+        st.plotly_chart(fig_accuracy, use_container_width=True, key=f"{chart_prefix}_accuracy_plot")
+    
+    with col2:
+        # Gráfico de pérdida (barras)
+        fig_loss = px.bar(
+            df,
+            x="Model",
+            y=["Loss", "Val_Loss"],
+            title="Comparación de Pérdida entre Modelos",
+            labels={"value": "Pérdida", "variable": "Tipo"},
+            barmode="group",
+            color_discrete_sequence=px.colors.qualitative.Bold
+        )
+        
+        # Calcular el valor máximo para el eje y
+        loss_max = df[["Loss", "Val_Loss"]].values.max() * 1.2 if len(df) > 0 else 2.0
+        
+        # Configurar aspecto
+        fig_loss.update_layout(
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            xaxis=dict(title="Modelo"),
+            yaxis=dict(title="Pérdida", range=[0, loss_max]),
+            plot_bgcolor="rgba(0,0,0,0)",
+            xaxis_gridcolor="rgba(0,0,0,0.1)",
+            yaxis_gridcolor="rgba(0,0,0,0.1)",
+            height=400,
+            margin=dict(l=20, r=20, t=60, b=40)
+        )
+        
+        st.plotly_chart(fig_loss, use_container_width=True, key=f"{chart_prefix}_loss_plot")

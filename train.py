@@ -10,7 +10,7 @@ from sklearn.svm import SVC
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.naive_bayes import GaussianNB
-from sklearn.datasets import load_iris, load_wine, load_breast_cancer
+from sklearn.datasets import load_iris, load_wine, load_breast_cancer, load_digits, load_diabetes
 from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 import pickle
@@ -109,13 +109,14 @@ class DistributedMLTrainer:
             logger.info(f"Cluster autodescubierto: {len(alive_nodes)} nodos vivos de {len(self.cluster_nodes)} totales")
         except Exception as e:
             logger.warning(f"Error actualizando información del cluster: {e}")
-    
     def get_available_datasets(self):
         """Retorna los datasets disponibles"""
         return {
             'iris': load_iris(),
             'wine': load_wine(),
-            'breast_cancer': load_breast_cancer()
+            'breast_cancer': load_breast_cancer(),
+            'digits': load_digits(),
+            'diabetes': load_diabetes()
         }
     
     def get_available_models(self):

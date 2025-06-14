@@ -8,6 +8,11 @@ import plotly.graph_objects as go
 from datetime import datetime
 from train import DistributedMLTrainer
 import time
+import pickle
+import ray
+from sklearn.model_selection import KFold
+from sklearn.metrics import log_loss, accuracy_score
+from sklearn.model_selection import train_test_split
 
 def load_training_results():
     """Carga los resultados de entrenamiento guardados"""
@@ -285,30 +290,38 @@ def get_fault_tolerance_stats():
         return {}
 
 def plot_training_metrics(training_history, chart_prefix=""):
-    """Visualiza métricas de rendimiento durante el entrenamiento"""
+    """Visualiza métricas de rendimiento de los modelos"""
     if not training_history or not isinstance(training_history, dict):
         st.warning("No hay datos de historial de entrenamiento disponibles")
         return
     
-    # Preparamos los datos para las gráficas
+    # Preparamos los datos para gráficas de barras comparativas
     metrics_data = []
-    epochs_data = []
     
     for model_name, history in training_history.items():
-        if not history:
+        if not history or not isinstance(history, dict):
+            continue
+        
+        # Solo procesar si hay métricas disponibles
+        if 'accuracy' not in history or history['accuracy'] is None:
             continue
             
-        epochs = list(range(1, len(history.get('accuracy', [])) + 1))
+        # Crear un registro para este modelo
+        entry = {
+            'Model': model_name,
+            'Accuracy': float(history.get('accuracy', 0)),
+            'Val_Accuracy': float(history.get('val_accuracy', 0)),
+            'Loss': float(history.get('loss', 0)),
+            'Val_Loss': float(history.get('val_loss', 0))
+        }
         
-        for epoch_idx, epoch in enumerate(epochs):
-            metrics_data.append({
-                'Model': model_name,
-                'Epoch': epoch,
-                'Accuracy': history.get('accuracy', [])[epoch_idx] if 'accuracy' in history and epoch_idx < len(history['accuracy']) else None,
-                'Loss': history.get('loss', [])[epoch_idx] if 'loss' in history and epoch_idx < len(history['loss']) else None,
-                'Val_Accuracy': history.get('val_accuracy', [])[epoch_idx] if 'val_accuracy' in history and epoch_idx < len(history['val_accuracy']) else None,
-                'Val_Loss': history.get('val_loss', [])[epoch_idx] if 'val_loss' in history and epoch_idx < len(history['val_loss']) else None
-            })
+        # Normalizar valores de accuracy
+        if entry['Accuracy'] > 1:
+            entry['Accuracy'] = min(1.0, entry['Accuracy'] / 100)
+        if entry['Val_Accuracy'] > 1:
+            entry['Val_Accuracy'] = min(1.0, entry['Val_Accuracy'] / 100)
+            
+        metrics_data.append(entry)
     
     if not metrics_data:
         st.warning("No hay suficientes datos de historial para visualizar")
@@ -316,27 +329,34 @@ def plot_training_metrics(training_history, chart_prefix=""):
         
     df = pd.DataFrame(metrics_data)
     
+    # Mostrar información del DataFrame para depuración
+    with st.expander("Información del DataFrame generado", expanded=False):
+        st.write("Columnas disponibles:", df.columns.tolist())
+        st.write("Número de filas:", len(df))
+        st.write("Valores únicos en 'Model':", df['Model'].unique().tolist())
+        st.write("Datos completos:")
+        st.write(df)
+    
     # Crear columnas para los gráficos
     col1, col2 = st.columns(2)
     
     with col1:
-        # Gráfico de precisión
-        fig_accuracy = px.line(
-            df, 
-            x="Epoch", 
+        # Gráfico de precisión (barras)
+        fig_accuracy = px.bar(
+            df,
+            x="Model",
             y=["Accuracy", "Val_Accuracy"],
-            color="Model",
-            title="Evolución de Precisión durante Entrenamiento",
+            title="Comparación de Precisión entre Modelos",
             labels={"value": "Precisión", "variable": "Tipo"},
-            line_shape="spline",
-            render_mode="svg",
+            barmode="group",
             color_discrete_sequence=px.colors.qualitative.Bold
         )
         
+        # Configurar aspecto
         fig_accuracy.update_layout(
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-            xaxis=dict(title="Época"),
-            yaxis=dict(title="Precisión", tickformat=".0%"),
+            xaxis=dict(title="Modelo"),
+            yaxis=dict(title="Precisión", tickformat=".0%", range=[0, 1]),
             plot_bgcolor="rgba(0,0,0,0)",
             xaxis_gridcolor="rgba(0,0,0,0.1)",
             yaxis_gridcolor="rgba(0,0,0,0.1)",
@@ -347,23 +367,25 @@ def plot_training_metrics(training_history, chart_prefix=""):
         st.plotly_chart(fig_accuracy, use_container_width=True, key=f"{chart_prefix}_accuracy_plot")
     
     with col2:
-        # Gráfico de pérdida
-        fig_loss = px.line(
-            df, 
-            x="Epoch", 
+        # Gráfico de pérdida (barras)
+        fig_loss = px.bar(
+            df,
+            x="Model",
             y=["Loss", "Val_Loss"],
-            color="Model",
-            title="Evolución de Pérdida durante Entrenamiento",
+            title="Comparación de Pérdida entre Modelos",
             labels={"value": "Pérdida", "variable": "Tipo"},
-            line_shape="spline",
-            render_mode="svg",
+            barmode="group",
             color_discrete_sequence=px.colors.qualitative.Bold
         )
         
+        # Calcular el valor máximo para el eje y
+        loss_max = df[["Loss", "Val_Loss"]].values.max() * 1.2 if len(df) > 0 else 2.0
+        
+        # Configurar aspecto
         fig_loss.update_layout(
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-            xaxis=dict(title="Época"),
-            yaxis=dict(title="Pérdida"),
+            xaxis=dict(title="Modelo"),
+            yaxis=dict(title="Pérdida", range=[0, loss_max]),
             plot_bgcolor="rgba(0,0,0,0)",
             xaxis_gridcolor="rgba(0,0,0,0.1)",
             yaxis_gridcolor="rgba(0,0,0,0.1)",
@@ -372,283 +394,10 @@ def plot_training_metrics(training_history, chart_prefix=""):
         )
         
         st.plotly_chart(fig_loss, use_container_width=True, key=f"{chart_prefix}_loss_plot")
-        
-    # Gráfico combinado de precisión vs pérdida
-    fig_combined = go.Figure()
-    
-    for model in df['Model'].unique():
-        model_data = df[df['Model'] == model]
-        
-        # Agregar línea de precisión
-        fig_combined.add_trace(go.Scatter(
-            x=model_data['Epoch'],
-            y=model_data['Accuracy'],
-            name=f"{model} - Precisión",
-            line=dict(width=2),
-            mode='lines',
-        ))
-        
-        # Agregar línea de pérdida
-        fig_combined.add_trace(go.Scatter(
-            x=model_data['Epoch'],
-            y=model_data['Loss'],
-            name=f"{model} - Pérdida",
-            line=dict(width=2, dash='dash'),
-            mode='lines',
-            yaxis="y2"
-        ))
-    
-    fig_combined.update_layout(
-        title="Precisión vs Pérdida durante Entrenamiento",
-        xaxis=dict(title="Época"),
-        yaxis=dict(
-            title="Precisión",
-            tickformat=".0%",
-            side="left"
-        ),
-        yaxis2=dict(
-            title="Pérdida",
-            overlaying="y",
-            side="right"
-        ),
-        legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5),
-        plot_bgcolor="rgba(0,0,0,0)",
-        xaxis_gridcolor="rgba(0,0,0,0.1)",
-        yaxis_gridcolor="rgba(0,0,0,0.1)",
-        height=400,
-        margin=dict(l=20, r=20, t=60, b=40)
-    )
-    
-    st.plotly_chart(fig_combined, use_container_width=True, key=f"{chart_prefix}_combined_plot")
-
-def plot_inference_metrics(inference_data, chart_prefix=""):
-    """Visualiza métricas de inferencia en producción usando solo datos reales"""
-    if not inference_data or not isinstance(inference_data, dict) or len(inference_data) == 0:
-        # Cargamos datos reales de modelos entrenados
-        training_results = load_training_results()
-        
-        if not training_results or len(training_results) == 0:
-            st.warning("No hay modelos entrenados disponibles. Por favor, entrene algunos modelos primero.")
-            st.info("Use la pestaña de 'Entrenamiento Avanzado' para entrenar modelos y generar métricas reales.")
-            return
-        
-        st.caption("Usando datos reales de los modelos entrenados")
-        
-        # Crear datos de inferencia basados en los modelos entrenados reales
-        inference_data = {}
-        timestamps = pd.date_range(end=datetime.now(), periods=24, freq='H')
-        
-        # Recorremos todos los datasets y modelos entrenados
-        for dataset_name, models in training_results.items():
-            for model_name, metrics in models.items():
-                # Solo si el modelo tiene métricas reales lo incluimos
-                if 'accuracy' in metrics and 'training_time' in metrics:
-                    # Generamos métricas de inferencia basadas en el rendimiento real del modelo
-                    # - Mejor accuracy = menor latencia
-                    # - Mayor tiempo de entrenamiento = mayor uso de recursos
-                    base_latency = 20 * (1 - metrics['accuracy'])  # Menor accuracy = mayor latencia
-                    base_resource_usage = 30 + (metrics['training_time'] * 2)  # Modelos más complejos usan más recursos
-                    
-                    # Calculamos el throughput basado en la latencia (inverso)
-                    base_throughput = 100 * metrics['accuracy']
-                    
-                    # Creamos variaciones temporales para simular cambios en el tiempo, pero basados en datos reales
-                    # del modelo entrenado
-                    inference_data[f"{dataset_name}_{model_name}"] = {
-                        "latency": [max(1, base_latency * (1 + np.sin(i/5) * 0.2)) for i in range(len(timestamps))],
-                        "cpu_usage": [min(95, base_resource_usage * (1 + np.sin(i/8) * 0.15)) for i in range(len(timestamps))],
-                        "memory_usage": [min(500, base_resource_usage * 5 * (1 + np.sin(i/10) * 0.1)) for i in range(len(timestamps))],
-                        "throughput": [max(10, base_throughput * (1 + np.sin(i/6) * 0.1)) for i in range(len(timestamps))],
-                        "timestamps": [ts.strftime("%Y-%m-%d %H:%M:%S") for ts in timestamps],
-                        "accuracy": metrics['accuracy'],
-                        "model": model_name,
-                        "dataset": dataset_name
-                    }
-        
-        # Si después de todo no hay datos de modelos entrenados utilizables
-        if not inference_data:
-            st.warning("No se pudieron generar métricas de inferencia basadas en los modelos existentes.")
-            st.info("Los modelos encontrados no contienen las métricas necesarias. Entrene nuevos modelos.")
-            return
-    
-    # Preparamos datos para las gráficas
-    latency_data = []
-    resource_data = []
-    throughput_data = []
-    
-    for model_full_name, metrics in inference_data.items():
-        timestamps = metrics.get('timestamps', [])
-        model_name = metrics.get('model', model_full_name.split('_')[-1] if '_' in model_full_name else model_full_name)
-        dataset_name = metrics.get('dataset', model_full_name.split('_')[0] if '_' in model_full_name else 'dataset')
-        display_name = f"{model_name} ({dataset_name})"
-        
-        for i, ts in enumerate(timestamps):
-            if i < len(metrics.get('latency', [])):
-                latency_data.append({
-                    'Model': display_name,
-                    'Timestamp': ts,
-                    'Latency': metrics.get('latency', [])[i]
-                })
-            
-            if i < len(metrics.get('cpu_usage', [])) and i < len(metrics.get('memory_usage', [])):
-                resource_data.append({
-                    'Model': display_name,
-                    'Timestamp': ts,
-                    'CPU': metrics.get('cpu_usage', [])[i],
-                    'Memory': metrics.get('memory_usage', [])[i]
-                })
-            
-            if i < len(metrics.get('throughput', [])):
-                throughput_data.append({
-                    'Model': display_name,
-                    'Timestamp': ts,
-                    'Throughput': metrics.get('throughput', [])[i]
-                })
-    
-    # Crear DataFrames
-    latency_df = pd.DataFrame(latency_data)
-    resource_df = pd.DataFrame(resource_data)
-    throughput_df = pd.DataFrame(throughput_data)
-    
-    # Mostrar tabla con información general de los modelos
-    model_summary = []
-    for model_full_name, metrics in inference_data.items():
-        model_name = metrics.get('model', model_full_name.split('_')[-1] if '_' in model_full_name else model_full_name)
-        dataset_name = metrics.get('dataset', model_full_name.split('_')[0] if '_' in model_full_name else 'dataset')
-        
-        avg_latency = np.mean(metrics.get('latency', [0]))
-        avg_throughput = np.mean(metrics.get('throughput', [0]))
-        accuracy = metrics.get('accuracy', 0)
-        
-        model_summary.append({
-            'Modelo': model_name,
-            'Dataset': dataset_name,
-            'Precisión': f"{accuracy:.4f}" if accuracy else "N/A",
-            'Latencia Prom.': f"{avg_latency:.2f} ms",
-            'Peticiones/s': f"{avg_throughput:.2f}"
-        })
-    
-    st.markdown("### Resumen de Modelos Monitoreados")
-    st.dataframe(pd.DataFrame(model_summary), use_container_width=True)
-    
-    # Si no hay suficientes datos para los gráficos, detenemos la ejecución
-    if latency_df.empty or resource_df.empty or throughput_df.empty:
-        return
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        # Gráfico de latencia
-        fig_latency = px.line(
-            latency_df, 
-            x="Timestamp", 
-            y="Latency", 
-            color="Model",
-            title="Latencia de Modelos en Producción",
-            labels={"Latency": "Latencia (ms)"},
-            line_shape="spline",
-            render_mode="svg"
-        )
-        
-        fig_latency.update_layout(
-            xaxis=dict(title=""),
-            plot_bgcolor="rgba(0,0,0,0)",
-            xaxis_gridcolor="rgba(0,0,0,0.1)",
-            yaxis_gridcolor="rgba(0,0,0,0.1)",
-            height=350,
-            margin=dict(l=20, r=20, t=60, b=40)
-        )
-        
-        st.plotly_chart(fig_latency, use_container_width=True, key=f"{chart_prefix}_latency_plot")
-    
-    with col2:
-        # Gráfico de throughput
-        fig_throughput = px.line(
-            throughput_df, 
-            x="Timestamp", 
-            y="Throughput", 
-            color="Model",
-            title="Rendimiento de Modelos en Producción",
-            labels={"Throughput": "Peticiones/segundo"},
-            line_shape="spline",
-            render_mode="svg"
-        )
-        
-        fig_throughput.update_layout(
-            xaxis=dict(title=""),
-            plot_bgcolor="rgba(0,0,0,0)",
-            xaxis_gridcolor="rgba(0,0,0,0.1)",
-            yaxis_gridcolor="rgba(0,0,0,0.1)",
-            height=350,
-            margin=dict(l=20, r=20, t=60, b=40)
-        )
-        
-        st.plotly_chart(fig_throughput, use_container_width=True, key=f"{chart_prefix}_throughput_plot")
-    
-    # Gráfico de uso de recursos
-    st.markdown("### Uso de Recursos por Modelo")
-    
-    # Primero convertimos los datos para crear un gráfico más claro y compacto
-    resource_summary = resource_df.groupby('Model').agg({
-        'CPU': ['mean', 'max', 'min'],
-        'Memory': ['mean', 'max', 'min']
-    }).reset_index()
-    
-    resource_summary.columns = ['Model', 'CPU_Mean', 'CPU_Max', 'CPU_Min', 'Memory_Mean', 'Memory_Max', 'Memory_Min']
-    
-    # Crear gráfico de barras para uso de recursos
-    fig_resources = go.Figure()
-    
-    for model in resource_summary['Model'].unique():
-        model_data = resource_summary[resource_summary['Model'] == model]
-        
-        fig_resources.add_trace(go.Bar(
-            name=f"{model} - CPU",
-            y=[model],
-            x=[model_data['CPU_Mean'].iloc[0]],
-            orientation='h',
-            error_x=dict(
-                type='data',
-                symmetric=False,
-                array=[model_data['CPU_Max'].iloc[0] - model_data['CPU_Mean'].iloc[0]],
-                arrayminus=[model_data['CPU_Mean'].iloc[0] - model_data['CPU_Min'].iloc[0]]
-            ),
-            marker_color='rgba(55, 126, 184, 0.7)'
-        ))
-        
-        fig_resources.add_trace(go.Bar(
-            name=f"{model} - Memoria",
-            y=[model],
-            x=[model_data['Memory_Mean'].iloc[0]],
-            orientation='h',
-            error_x=dict(
-                type='data',
-                symmetric=False,
-                array=[model_data['Memory_Max'].iloc[0] - model_data['Memory_Mean'].iloc[0]],
-                arrayminus=[model_data['Memory_Mean'].iloc[0] - model_data['Memory_Min'].iloc[0]]
-            ),
-            marker_color='rgba(228, 26, 28, 0.7)'
-        ))
-    
-    fig_resources.update_layout(
-        title="Uso de Recursos Promedio",
-        xaxis=dict(title="Utilización"),
-        barmode='group',
-        plot_bgcolor="rgba(0,0,0,0)",
-        xaxis_gridcolor="rgba(0,0,0,0.1)",
-        yaxis_gridcolor="rgba(0,0,0,0.1)",
-        height=max(300, len(resource_summary) * 60),  # Altura dinámica según número de modelos
-        margin=dict(l=20, r=20, t=60, b=40),
-        legend=dict(orientation='h')
-    )
-    
-    st.plotly_chart(fig_resources, use_container_width=True, key=f"{chart_prefix}_resources_summary_plot")
-    
-    st.caption(f"Última actualización: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 def run_distributed_training_advanced(dataset_name, selected_models, hyperparameters=None, enable_fault_tolerance=True, progress_callback=None):
     """
-    Ejecuta entrenamiento distribuido avanzado con monitoreo en tiempo real
+    Ejecuta entrenamiento distribuido avanzado con monitoreo en tiempo real utilizando Ray
     
     Args:
         dataset_name: Nombre del dataset a utilizar
@@ -657,93 +406,396 @@ def run_distributed_training_advanced(dataset_name, selected_models, hyperparame
         enable_fault_tolerance: Si se habilita la tolerancia a fallos
         progress_callback: Función para reportar progreso
     """
+   
+    
     try:
-        trainer = DistributedMLTrainer(enable_fault_tolerance=enable_fault_tolerance)
-        
         # Mostrar progreso
         progress_bar = st.progress(0)
         status_text = st.empty()
         metrics_container = st.empty()
         
-        # Iniciar entrenamiento con callbacks
+        # Inicializar resultados y historiales
         results = {}
         training_history = {}
         
-        # Simulación de entrenamiento distribuido (para demostración)
-        status_text.text("⏳ Inicializando entrenamiento distribuido...")
-        time.sleep(1)
-        
-        total_steps = len(selected_models) * 10  # 10 épocas simuladas por modelo
-        completed_steps = 0
-        
-        status_text.text("🚀 Entrenamiento en proceso...")
-        
-        # Simular entrenamiento progresivo
-        for model_idx, model_name in enumerate(selected_models):
-            # Inicialización del historial para este modelo
-            training_history[model_name] = {
-                "accuracy": [],
-                "loss": [],
-                "val_accuracy": [],
-                "val_loss": []
-            }
+        # Iniciar entrenador distribuido con Ray
+        status_text.text("⏳ Inicializando conexión con el cluster Ray...")
+        trainer = DistributedMLTrainer(enable_fault_tolerance=enable_fault_tolerance)
+          # Verificar si Ray está conectado al cluster
+        if not ray.is_initialized():
+            status_text.text("⚠️ Conectando con cluster Ray...")
+            try:
+                # Intentar conectar al cluster Ray con diferentes estrategias
+                # Estrategia 1: Usar la variable de entorno
+                head_address = os.getenv('RAY_HEAD_SERVICE_HOST', 'ray-head')
+                ray_port = os.getenv('RAY_HEAD_SERVICE_PORT', '10001')
+                
+                # Intentar diferentes formatos de conexión
+                connection_attempts = [
+                    f"ray://{head_address}:{ray_port}",  # Formato ray://
+                    f"{head_address}:{ray_port}",        # Formato directo
+                    "auto",                              # Autodetección
+                    None                                 # Local
+                ]
+                
+                connected = False
+                for address in connection_attempts:
+                    try:
+                        if address:
+                            status_text.text(f"⚠️ Intentando conectar a Ray en: {address}")
+                            ray.init(address=address, ignore_reinit_error=True)
+                        else:
+                            status_text.text("⚠️ Iniciando Ray en modo local...")
+                            ray.init(ignore_reinit_error=True)
+                        
+                        connected = True
+                        status_text.text(f"✅ Conectado a Ray en: {ray.get_runtime_context().gcs_address}")
+                        break
+                    except Exception as e:
+                        status_text.text(f"⚠️ No se pudo conectar a Ray en {address}: {str(e)}")
+                        continue
+                
+                if not connected:
+                    st.error("No se pudo conectar al cluster Ray después de varios intentos")
+                    status_text.error("❌ No se pudo conectar con el cluster Ray")
+                    return None, None
+                
+            except Exception as e:
+                st.error(f"Error conectando con Ray: {str(e)}")
+                status_text.error("❌ No se pudo conectar con el cluster Ray")
+                return None, None
+          # Mostrar información del cluster
+        try:
+            cluster_info = ray.cluster_resources()
+            cpu_count = int(cluster_info.get('CPU', 0))
+            gpu_count = int(cluster_info.get('GPU', 0))
+            nodes = ray.nodes()
+            alive_nodes = [node for node in nodes if node.get('Alive', False)]
             
-            # Simulamos 10 épocas
-            for epoch in range(10):
-                # Calcular progreso por época
-                completed_steps += 1
-                progress = completed_steps / total_steps
+            # Mostrar información detallada del cluster
+            status_text.text(f"🚀 Conectado al cluster Ray con {len(alive_nodes)} nodos y {cpu_count} CPUs disponibles")
+            
+            # Mostrar información adicional sobre recursos del cluster
+            with st.expander("Detalles del cluster Ray", expanded=False):
+                st.write(f"Nodos totales: {len(nodes)}")
+                st.write(f"Nodos activos: {len(alive_nodes)}")
+                st.write(f"CPUs disponibles: {cpu_count}")
+                if gpu_count > 0:
+                    st.write(f"GPUs disponibles: {gpu_count}")
+                
+                # Mostrar información de cada nodo activo
+                for i, node in enumerate(alive_nodes):
+                    st.write(f"Nodo {i+1}: ID={node['NodeID'][:8]}, CPUs={node['Resources'].get('CPU', 0)}")
+        except Exception as e:
+            st.warning(f"No se pudo obtener información detallada del cluster Ray: {e}")
+            # Establecer valores predeterminados
+            alive_nodes = []
+            cpu_count = 0
+        
+        # Cargar el dataset seleccionado
+        datasets = trainer.get_available_datasets()
+        if dataset_name not in datasets:
+            status_text.error(f"❌ Dataset '{dataset_name}' no disponible")
+            return None, None
+            
+        dataset = datasets[dataset_name]
+        X, y = dataset.data, dataset.target
+          # Ya no usaremos KFold para múltiples épocas
+        # Solo haremos una única división de train/test por modelo
+        
+        # Configurar hiperparámetros para los modelos si se proporcionan
+        available_models = trainer.get_available_models()
+        models_to_train = {}
+        
+        for model_name in selected_models:
+            if model_name in available_models:
+                base_model = available_models[model_name]
+                # Aplicar hiperparámetros si se proporcionan
+                if hyperparameters and model_name in hyperparameters:
+                    for param, value in hyperparameters[model_name].items():
+                        if hasattr(base_model, param):
+                            setattr(base_model, param, value)
+                models_to_train[model_name] = base_model
+        
+        # Mostrar número de modelos a entrenar
+        status_text.text(f"🧠 Preparando entrenamiento de {len(models_to_train)} modelos en {len(alive_nodes)} nodos")        # Inicializar historiales para cada modelo (ya no usamos listas para métricas)
+        for model_name in models_to_train:
+            training_history[model_name] = {
+                "accuracy": None,
+                "loss": None,
+                "val_accuracy": None,
+                "val_loss": None,
+                "start_time": time.time(),
+                "node_assignment": None
+            }
+        
+        # Crear tareas Ray para entrenamiento distribuido
+        @ray.remote(num_cpus=1)
+        def train_model_with_tracking(model, model_name, X, y, fold_idx, total_folds):
+            """Función remota para entrenar un modelo y rastrear su progreso"""
+            
+            
+            try:
+                # Dividir datos para esta iteración
+                X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=fold_idx)
+                
+                # Entrenar el modelo
+                model.fit(X_train, y_train)
+                
+                # Evaluar el modelo
+                train_preds = model.predict(X_train)
+                val_preds = model.predict(X_val)
+                
+                # Calcular métricas
+                train_acc = accuracy_score(y_train, train_preds)
+                val_acc = accuracy_score(y_val, val_preds)
+                
+                # Para calcular pérdida, necesitamos probabilidades
+                try:
+                    train_probs = model.predict_proba(X_train)
+                    val_probs = model.predict_proba(X_val)
+                    train_loss = log_loss(y_train, train_probs)
+                    val_loss = log_loss(y_val, val_probs)
+                except:
+                    # Si el modelo no soporta predict_proba, usamos valores aproximados
+                    train_loss = 1.0 - train_acc
+                    val_loss = 1.0 - val_acc
+                  # Asegurarse de que las métricas están en rangos adecuados
+                # Accuracy debe ser entre 0 y 1
+                train_acc = float(train_acc)
+                val_acc = float(val_acc)
+                train_loss = float(train_loss)
+                val_loss = float(val_loss)
+                
+                # Normalizar accuracy si está fuera de rango
+                if train_acc > 1:
+                    train_acc = min(1.0, train_acc / 100)
+                if val_acc > 1:
+                    val_acc = min(1.0, val_acc / 100)
+                    
+                # Asegurarse de que loss sea positivo y razonable
+                train_loss = max(0, train_loss)
+                val_loss = max(0, val_loss)
+                
+                # Limitar valores de pérdida extremadamente altos
+                if train_loss > 10:
+                    train_loss = min(10.0, train_loss)
+                if val_loss > 10:
+                    val_loss = min(10.0, val_loss)
+                return {
+                    'model_name': model_name,
+                    'fold': fold_idx,
+                    'status': 'success',
+                    'model': model,  # Incluir el modelo entrenado
+                    'metrics': {
+                        'accuracy': train_acc,
+                        'loss': train_loss,
+                        'val_accuracy': val_acc,
+                        'val_loss': val_loss
+                    }
+                }
+            except Exception as e:
+                return {
+                    'model_name': model_name,
+                    'fold': fold_idx,
+                    'status': 'failed',
+                    'error': str(e)
+                }
+          # Iniciar entrenamiento distribuido
+        status_text.text("🚀 Iniciando entrenamiento distribuido con Ray...")
+          # Para cada modelo, entrenar en paralelo en diferentes nodos
+        total_tasks = len(models_to_train)  # Un entrenamiento por modelo
+        completed_tasks = 0
+        tasks = []
+        task_mapping = {}  # Para mapear tasks a modelos
+        completed_task_results = []  # Para almacenar los resultados de las tareas completadas        # Lanzar tareas distribuyéndolas eficientemente entre los nodos (una por modelo)
+        if alive_nodes:
+            # Distribución cíclica entre los nodos disponibles
+            for i, (model_name, model) in enumerate(models_to_train.items()):
+                # Asignar de manera cíclica a los nodos disponibles
+                node_idx = i % len(alive_nodes)
+                node_id = alive_nodes[node_idx]['NodeID']
+                
+                # Registrar asignación de nodo
+                training_history[model_name]['node_assignment'] = node_id
+                
+                # Usar num_cpus para balancear carga
+                task = train_model_with_tracking.options(num_cpus=1).remote(model, model_name, X, y, 0, 1)
+                
+                tasks.append(task)
+                task_mapping[task] = (model_name, 0)  # Ya no usamos múltiples folds
+                
+                # Registrar estadísticas de distribución
+                status_text.text(f"🚀 Distribuyendo tarea: modelo {model_name} → nodo {node_id[:8]}")
+                time.sleep(0.1)  # Pequeña pausa para mostrar la asignación en la UI
+        else:
+            # Sin nodos específicos, usar Ray para balancear automáticamente
+            for model_name, model in models_to_train.items():
+                task = train_model_with_tracking.remote(model, model_name, X, y, 0, 1)
+                tasks.append(task)
+                task_mapping[task] = (model_name, 0)
+        
+        # Recoger resultados a medida que estén disponibles
+        while tasks:
+            # Esperar a que al menos una tarea termine
+            done_id, tasks = ray.wait(tasks, num_returns=1)
+            try:                
+                result = ray.get(done_id[0])
+                completed_tasks += 1
+                
+                # Guardar resultado para uso posterior
+                completed_task_results.append(result)
+                
+                # Actualizar barra de progreso
+                progress = completed_tasks / total_tasks
                 progress_bar.progress(progress)
                 
-                # Simular datos de entrenamiento
-                acc = min(0.5 + (epoch * 0.05) + (model_idx * 0.02), 0.99)
-                val_acc = min(0.45 + (epoch * 0.04) + (model_idx * 0.015), 0.95)
-                loss = max(0.5 - (epoch * 0.05), 0.1)
-                val_loss = max(0.55 - (epoch * 0.04), 0.15)
+                model_name = result['model_name']
                 
-                # Agregar ruido aleatorio a las métricas
-                acc += np.random.uniform(-0.02, 0.02)
-                val_acc += np.random.uniform(-0.02, 0.02)
-                loss += np.random.uniform(-0.02, 0.02)
-                val_loss += np.random.uniform(-0.02, 0.02)
-                
-                # Actualizar historial
-                training_history[model_name]["accuracy"].append(acc)
-                training_history[model_name]["val_accuracy"].append(val_acc)
-                training_history[model_name]["loss"].append(loss)
-                training_history[model_name]["val_loss"].append(val_loss)
-                
-                # Actualizar display de métricas
-                if epoch % 2 == 0:
+                if result['status'] == 'success':                    
+                    metrics = result['metrics']
+                    
+                    # Asegurarnos que los valores están en el rango correcto
+                    accuracy = float(metrics['accuracy'])
+                    val_accuracy = float(metrics['val_accuracy'])
+                    loss = float(metrics['loss'])
+                    val_loss = float(metrics['val_loss'])
+                    
+                    # Normalizar valores de accuracy para asegurar que están entre 0 y 1
+                    if accuracy > 1:
+                        accuracy = min(1.0, accuracy / 100)
+                    if val_accuracy > 1:
+                        val_accuracy = min(1.0, val_accuracy / 100)
+                    
+                    # Asegurarse de que loss no es negativa
+                    loss = max(0, loss)
+                    val_loss = max(0, val_loss)
+                      # Guardar valores directamente (ya no son listas)
+                    training_history[model_name]['accuracy'] = accuracy
+                    training_history[model_name]['loss'] = loss
+                    training_history[model_name]['val_accuracy'] = val_accuracy
+                    training_history[model_name]['val_loss'] = val_loss
+                      # Actualizar métricas en pantalla
                     with metrics_container.container():
-                        st.caption(f"Entrenando modelo {model_name} - Época {epoch+1}/10")
+                        st.caption(f"Entrenando {model_name} - Progreso {completed_tasks}/{total_tasks} ({(completed_tasks/total_tasks)*100:.0f}%)")
+                          # Mostrar estadísticas por modelo 
+                        model_progress = {}
+                        for m in training_history:
+                            # El progreso es binario: completado o no completado
+                            is_completed = training_history[m]['accuracy'] is not None
+                            model_progress[m] = 100 if is_completed else 0  
+                        
+                        # Mostrar barras de progreso por modelo
+                        for m, prog in model_progress.items():
+                            st.caption(f"{m}: {'Completado' if prog == 100 else 'Pendiente'}")
+                            st.progress(prog/100)
+                            
+                        # Mostrar métricas del modelo actual
                         cols = st.columns(4)
-                        cols[0].metric("Accuracy", f"{acc:.2%}", f"+{acc - training_history[model_name]['accuracy'][0]:.2%}" if epoch > 0 else None)
-                        cols[1].metric("Val Accuracy", f"{val_acc:.2%}", f"+{val_acc - training_history[model_name]['val_accuracy'][0]:.2%}" if epoch > 0 else None)
-                        cols[2].metric("Loss", f"{loss:.4f}", f"{loss - training_history[model_name]['loss'][0]:.4f}" if epoch > 0 else None)
-                        cols[3].metric("Val Loss", f"{val_loss:.4f}", f"{val_loss - training_history[model_name]['val_loss'][0]:.4f}" if epoch > 0 else None)
+                        acc = training_history[model_name]['accuracy']
+                        val_acc = training_history[model_name]['val_accuracy']
+                        loss = training_history[model_name]['loss']
+                        val_loss = training_history[model_name]['val_loss']
+                        cols[0].metric("Train Accuracy", f"{acc:.2%}")
+                        cols[1].metric("Val Accuracy", f"{val_acc:.2%}")
+                        cols[2].metric("Train Loss", f"{loss:.4f}")
+                        cols[3].metric("Val Loss", f"{val_loss:.4f}")
+                        
+                        # Mostrar tiempo transcurrido
+                        elapsed = time.time() - training_history[model_name]['start_time']
+                        st.caption(f"⏱️ Tiempo de entrenamiento: {elapsed:.1f} segundos")
                 
-                # Simular trabajo
-                time.sleep(0.3)
+                elif result['status'] == 'failed':
+                    # Mostrar error en la UI
+                    st.warning(f"Error en {model_name}, fold {result['fold']}: {result.get('error', 'Error desconocido')}")
                 
-            # Agregar resultados finales
-            results[model_name] = {
-                "accuracy": float(training_history[model_name]["val_accuracy"][-1]),
-                "training_time": np.random.uniform(5, 20),
-                "cv_mean": float(np.mean(training_history[model_name]["val_accuracy"])),
-                "cv_std": float(np.std(training_history[model_name]["val_accuracy"]))
-            }
+            except Exception as e:
+                st.error(f"Error procesando resultado: {str(e)}")
+          # Calcular resultados finales para cada modelo
+        for model_name in training_history:
+            if training_history[model_name]['val_accuracy'] is not None:  # Si hay datos de validación
+                start_time = training_history[model_name].get('start_time', time.time())
+                end_time = time.time()
+                training_duration = end_time - start_time
+                
+                results[model_name] = {
+                    "accuracy": float(training_history[model_name]["val_accuracy"]),
+                    "training_time": training_duration,
+                    "cv_mean": float(training_history[model_name]["val_accuracy"]),  # Ya no es una media de varios folds
+                    "cv_std": 0.0,  # Ya no hay desviación estándar con un solo valor
+                    "timestamp": datetime.now().isoformat()
+                }
             
         # Entrenamiento completo
         progress_bar.progress(1.0)
         status_text.success("✅ Entrenamiento completado exitosamente!")
         metrics_container.empty()
-        
-        # Guardar historial de entrenamiento
+          # Guardar historial de entrenamiento
         if dataset_name and len(results) > 0:
-            history_filename = f"training_history_{dataset_name}.json"
+            # Crear directorio para resultados si no existe
+            os.makedirs("training_results", exist_ok=True)
+              # Guardar historial de entrenamiento
+            history_filename = os.path.join("training_results", f"training_history_{dataset_name}.json")
             with open(history_filename, 'w') as f:
-                json.dump(training_history, f)
+                # Preparar datos serializables para guardar
+                json_history = {}
+                for model_name, data in training_history.items():
+                    json_history[model_name] = {
+                        k: v for k, v in data.items() 
+                        if isinstance(v, (list, dict, str, int, float)) or v is None
+                    }
+                json.dump(json_history, f)
+            
+            # Guardar modelos entrenados
+            models_directory = os.path.join("training_results", f"models_{dataset_name}")
+            os.makedirs(models_directory, exist_ok=True)
+            
+            # Recolectar los mejores modelos por validación cruzada
+            best_models = {}
+            for model_name in results.keys():
+                try:
+                    best_fold_idx = 0
+                    best_val_acc = 0;
+                    
+                    # Buscar el mejor modelo entre los resultados de folds
+                    for task in [t for t in completed_task_results if t['model_name'] == model_name]:
+                        if task.get('status') == 'success' and 'metrics' in task:
+                            val_acc = task['metrics'].get('val_accuracy', 0)
+                            if val_acc > best_val_acc:
+                                best_val_acc = val_acc
+                                best_fold_idx = task.get('fold', 0)
+                                if 'model' in task:
+                                    best_models[model_name] = task['model']
+                    
+                    # Guardar el mejor modelo
+                    if model_name in best_models:
+                        model_filename = os.path.join(models_directory, f"{model_name}.pkl")
+                        with open(model_filename, 'wb') as f:
+                            pickle.dump(best_models[model_name], f)
+                        status_text.text(f"✅ Guardado mejor modelo {model_name} (fold {best_fold_idx}, val_acc: {best_val_acc:.2%})")
+                    else:
+                        st.warning(f"No se encontró un modelo válido para {model_name}")
+                
+                except Exception as e:
+                    st.warning(f"Error al guardar el modelo {model_name}: {str(e)}")
+              # Guardar información de resultados para referencia
+            results_filename = os.path.join("training_results", f"results_{dataset_name}.json")
+            with open(results_filename, 'w') as f:
+                # Convertir resultados a formato serializable
+                json_results = {}
+                for model_name, result in results.items():
+                    json_results[model_name] = {k: v for k, v in result.items()}
+                json.dump(json_results, f)
+            
+            # Mostrar información de guardado
+            status_text.success(f"✅ Resultados y modelos guardados exitosamente!")
+            
+            # Mostrar banner informativo con la ruta completa de guardado
+            save_path = os.path.abspath("training_results")
+            st.success(f"""
+            ## 💾 Modelos Guardados Exitosamente            
+            Puede cargar estos modelos para inferencia o análisis posterior utilizando la pestaña de modelos.
+            """)
         
         # Devolver resultados y historial
         return results, training_history
@@ -771,3 +823,129 @@ def load_training_history(dataset_name):
             st.warning(f"Error cargando historial de entrenamiento: {e}")
     
     return None
+
+def load_trained_model(dataset_name, model_name):
+    """Carga un modelo entrenado desde el sistema de archivos"""
+    model_path = os.path.join("training_results", f"models_{dataset_name}", f"{model_name}.pkl")
+    
+    if not os.path.exists(model_path):
+        return None
+        
+    try:
+        with open(model_path, 'rb') as f:
+            model = pickle.load(f)
+        return model
+    except Exception as e:
+        st.error(f"Error cargando modelo {model_name} para dataset {dataset_name}: {str(e)}")
+        return None
+
+def get_trained_models_list(dataset_name):
+    """Obtiene la lista de modelos entrenados disponibles para un dataset"""
+    models_dir = os.path.join("training_results", f"models_{dataset_name}")
+    
+    if not os.path.exists(models_dir):
+        return []
+        
+    try:
+        # Listar archivos .pkl en el directorio
+        model_files = [f for f in os.listdir(models_dir) if f.endswith('.pkl')]
+        # Extraer nombres de modelos sin la extensión .pkl
+        model_names = [os.path.splitext(f)[0] for f in model_files]
+        return sorted(model_names)
+    except Exception as e:
+        st.warning(f"Error al listar modelos entrenados: {str(e)}")
+        return []
+
+def plot_inference_metrics(inference_data, chart_prefix=""):
+    """Visualiza métricas de inferencia de los modelos entrenados"""
+    if not inference_data or not isinstance(inference_data, dict):
+        st.warning("No hay datos de inferencia disponibles")
+        return
+    
+    # Preparar los datos para gráficas
+    metrics_data = []
+    
+    for model_name, results in inference_data.items():
+        if not results or not isinstance(results, dict):
+            continue
+        
+        # Extraer métricas relevantes
+        metrics = {
+            'Model': model_name,
+            'Accuracy': float(results.get('accuracy', 0)),
+            'Precision': float(results.get('precision', results.get('accuracy', 0))),
+            'Recall': float(results.get('recall', results.get('accuracy', 0))),
+            'F1': float(results.get('f1', results.get('accuracy', 0))),
+            'Inference_Time': float(results.get('inference_time', 0))
+        }
+        
+        # Normalizar valores entre 0 y 1
+        for key in ['Accuracy', 'Precision', 'Recall', 'F1']:
+            if metrics[key] > 1:
+                metrics[key] = min(1.0, metrics[key] / 100)
+                
+        metrics_data.append(metrics)
+    
+    if not metrics_data:
+        st.warning("No hay suficientes datos de inferencia para visualizar")
+        return
+    
+    df = pd.DataFrame(metrics_data)
+    
+    # Crear columnas para los gráficos
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Gráfico de métricas de rendimiento
+        fig_metrics = px.bar(
+            df,
+            x="Model",
+            y=["Accuracy", "Precision", "Recall", "F1"],
+            title="Métricas de Rendimiento por Modelo",
+            labels={"value": "Valor", "variable": "Métrica"},
+            barmode="group",
+            color_discrete_sequence=px.colors.qualitative.Bold
+        )
+        
+        # Configurar aspecto
+        fig_metrics.update_layout(
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            xaxis=dict(title="Modelo"),
+            yaxis=dict(title="Valor", tickformat=".0%", range=[0, 1]),
+            plot_bgcolor="rgba(0,0,0,0)",
+            xaxis_gridcolor="rgba(0,0,0,0.1)",
+            yaxis_gridcolor="rgba(0,0,0,0.1)",
+            height=400,
+            margin=dict(l=20, r=20, t=60, b=40)
+        )
+        
+        st.plotly_chart(fig_metrics, use_container_width=True, key=f"{chart_prefix}_metrics_plot")
+    
+    with col2:
+        # Gráfico de tiempo de inferencia
+        if 'Inference_Time' in df:
+            fig_time = px.bar(
+                df,
+                x="Model",
+                y="Inference_Time",
+                title="Tiempo de Inferencia por Modelo",
+                labels={"Inference_Time": "Tiempo (ms)"},
+                color_discrete_sequence=px.colors.qualitative.Bold
+            )
+            
+            # Configurar aspecto
+            max_time = df["Inference_Time"].max() * 1.2 if len(df) > 0 else 100
+            
+            fig_time.update_layout(
+                xaxis=dict(title="Modelo"),
+                yaxis=dict(title="Tiempo (ms)", range=[0, max_time]),
+                plot_bgcolor="rgba(0,0,0,0)",
+                xaxis_gridcolor="rgba(0,0,0,0.1)",
+                yaxis_gridcolor="rgba(0,0,0,0.1)",
+                height=400,
+                margin=dict(l=20, r=20, t=60, b=40)
+            )
+            
+            st.plotly_chart(fig_time, use_container_width=True, key=f"{chart_prefix}_time_plot")
+        else:
+            st.warning("No hay datos de tiempo de inferencia disponibles")

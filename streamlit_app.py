@@ -43,7 +43,7 @@ initialize_session_state()
 # Encabezado de la página
 st.markdown("""
 <div class="dashboard-header">
-    <h1>🚀 Ray ML Cluster Dashboard 2025</h1>
+    <h1>🚀 Ray ML Cluster Dashboard</h1>
     <h3>Sistema de Entrenamiento ML Distribuido</h3>
 </div>
 """, unsafe_allow_html=True)
