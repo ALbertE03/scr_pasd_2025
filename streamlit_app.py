@@ -31,11 +31,11 @@ st.markdown("""
         padding: 1rem;
         border-radius: 0.5rem;
         border-left: 4px solid #ff4b4b;
-    }
-    .success-card {
+    }    .success-card {
         background-color: #d4edda;
         padding: 1rem;
         border-radius: 0.5rem;
+        color: black;
         border-left: 4px solid #28a745;
     }
     .warning-card {
@@ -43,10 +43,11 @@ st.markdown("""
         padding: 1rem;
         border-radius: 0.5rem;
         border-left: 4px solid #ffc107;
-    }
-    .stTabs [data-baseweb="tab-list"] button [data-testid="stMarkdownContainer"] p {
+    }    .stTabs [data-baseweb="tab-list"] button [data-testid="stMarkdownContainer"] p {
         font-size: 1.1rem;
         font-weight: bold;
+    }    .stDataFrame {
+        color: black !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -64,14 +65,28 @@ def get_cluster_status():
         cluster_resources = ray.cluster_resources()
         nodes = ray.nodes()
         
+        # Analizar nodos vivos vs muertos
+        alive_nodes = []
+        dead_nodes = []
+        
+        for node in nodes:
+            if node.get('Alive', False):
+                alive_nodes.append(node)
+            else:
+                dead_nodes.append(node)
+        
         return {
             "connected": True,
             "resources": cluster_resources,
             "nodes": nodes,
+            "alive_nodes": alive_nodes,
+            "dead_nodes": dead_nodes,
             "total_cpus": cluster_resources.get('CPU', 0),
             "total_memory": cluster_resources.get('memory', 0),
             "total_gpus": cluster_resources.get('GPU', 0),
-            "node_count": len(nodes)
+            "node_count": len(nodes),
+            "alive_node_count": len(alive_nodes),
+            "dead_node_count": len(dead_nodes)
         }
     except Exception as e:
         return {
@@ -79,10 +94,14 @@ def get_cluster_status():
             "error": str(e),
             "resources": {},
             "nodes": [],
+            "alive_nodes": [],
+            "dead_nodes": [],
             "total_cpus": 0,
             "total_memory": 0,
             "total_gpus": 0,
-            "node_count": 0
+            "node_count": 0,
+            "alive_node_count": 0,
+            "dead_node_count": 0
         }
 
 @st.cache_data(ttl=10)
@@ -179,7 +198,7 @@ def plot_cluster_metrics(cluster_status):
         return
     
     # Métricas de recursos
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     
     with col1:
         # Gráfico de CPUs
@@ -215,6 +234,24 @@ def plot_cluster_metrics(cluster_status):
                                'thickness': 0.75, 'value': 24}}))
         fig_mem.update_layout(height=300)
         st.plotly_chart(fig_mem, use_container_width=True)
+    
+    with col3:
+        # Gráfico de estado de nodos
+        fig_nodes = go.Figure(data=[
+            go.Bar(
+                x=['Vivos', 'Muertos'],
+                y=[cluster_status['alive_node_count'], cluster_status['dead_node_count']],
+                marker_color=['green', 'red'],
+                text=[cluster_status['alive_node_count'], cluster_status['dead_node_count']],
+                textposition='auto',
+            )
+        ])
+        fig_nodes.update_layout(
+            title="Estado de Nodos",
+            yaxis_title="Cantidad",
+            height=300
+        )
+        st.plotly_chart(fig_nodes, use_container_width=True)
 
 def run_distributed_training(dataset_name, selected_models):
     """Ejecuta entrenamiento distribuido"""
@@ -274,10 +311,10 @@ def main():
     # Obtener estado del cluster
     cluster_status = get_cluster_status()
     system_metrics = get_system_metrics()
-    
-    # Estado de conexión
+      # Estado de conexión
     if cluster_status['connected']:
         st.sidebar.markdown('<div class="success-card">✅ Cluster Conectado</div>', unsafe_allow_html=True)
+        
     else:
         st.sidebar.markdown('<div class="warning-card">⚠️ Cluster Desconectado</div>', unsafe_allow_html=True)
         st.sidebar.error(f"Error: {cluster_status.get('error', 'Desconocido')}")
@@ -293,25 +330,35 @@ def main():
     
     with tab1:
         st.header("Vista General del Cluster")
-        
-        # Métricas principales
-        col1, col2, col3, col4 = st.columns(4)
+          # Métricas principales
+        col1, col2, col3, col4, col5 = st.columns(5)
         
         with col1:
             st.metric(
-                label="Nodos Activos",
-                value=cluster_status['node_count'],
-                delta="Conectados" if cluster_status['connected'] else "Desconectados"
+                label="Nodos Vivos",
+                value=cluster_status['alive_node_count'],
+                delta="Online" if cluster_status['alive_node_count'] > 0 else "Ninguno"
             )
         
         with col2:
+            # Mostrar nodos muertos con indicador visual
+            dead_count = cluster_status['dead_node_count']
+            delta_color = "inverse" if dead_count > 0 else "normal"
+            st.metric(
+                label="Nodos Muertos",
+                value=dead_count,
+                delta="⚠️ Atención" if dead_count > 0 else "✅ OK",
+                delta_color=delta_color
+            )
+        
+        with col3:
             st.metric(
                 label="CPUs Totales",
                 value=f"{cluster_status['total_cpus']:.0f}",
                 delta=f"{system_metrics.get('cpu_percent', 0):.1f}% uso" if system_metrics else "N/A"
             )
         
-        with col3:
+        with col4:
             memory_gb = cluster_status['total_memory'] / (1024**3) if cluster_status['total_memory'] else 0
             st.metric(
                 label="Memoria Total",
@@ -319,41 +366,71 @@ def main():
                 delta=f"{system_metrics.get('memory_percent', 0):.1f}% uso" if system_metrics else "N/A"
             )
         
-        with col4:
+        with col5:
             st.metric(
                 label="GPUs",
                 value=cluster_status['total_gpus'],
                 delta="Disponibles" if cluster_status['total_gpus'] > 0 else "No disponibles"
             )
-        
-        # Gráficos de métricas del cluster
+          # Gráficos de métricas del cluster
         if cluster_status['connected']:
+            # Alerta si hay nodos muertos
+            if cluster_status['dead_node_count'] > 0:
+                st.error(
+                    f"⚠️ **ATENCIÓN**: {cluster_status['dead_node_count']} nodo(s) están muertos. "
+                    f"Solo {cluster_status['alive_node_count']} de {cluster_status['node_count']} nodos están operativos."
+                )
+            else:
+                st.success(f"✅ Todos los {cluster_status['alive_node_count']} nodos están operativos")
+            
             plot_cluster_metrics(cluster_status)
     
     with tab2:
         st.header("Estado Detallado del Cluster")
-        
         if cluster_status['connected']:
             # Información de nodos
-            st.subheader("Nodos del Cluster")
+            st.subheader("Estado de los Nodos del Cluster")
+            
+            # Resumen rápido
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Total Nodos", cluster_status['node_count'])
+            with col2:
+                st.metric("Nodos Vivos", cluster_status['alive_node_count'], 
+                         delta="✅ Operativos")
+            with col3:
+                st.metric("Nodos Muertos", cluster_status['dead_node_count'],
+                         delta="⚠️ Fuera de línea" if cluster_status['dead_node_count'] > 0 else "✅ Ninguno")
+            
+            # Tabla detallada de nodos
+            st.subheader("Detalle de Nodos")
             
             nodes_data = []
             for i, node in enumerate(cluster_status['nodes']):
+                is_alive = node.get('Alive', False)
+                node_id = node.get('NodeID', f'node-{i+1}')
+                
                 nodes_data.append({
-                    'Nodo': f"Node-{i+1}",
-                    'Alive': "✅" if node.get('Alive', False) else "❌",
-                    'NodeManagerAddress': node.get('NodeManagerAddress', 'N/A'),
-                    'Resources': str(node.get('Resources', {}))
+                    'ID': node_id,
+                    'Estado': "🟢 Vivo" if is_alive else "🔴 Muerto",
+                    'Dirección': node.get('NodeManagerAddress', 'N/A'),
+                    'CPU': node.get('Resources', {}).get('CPU', 0),
+                    'Memoria (MB)': node.get('Resources', {}).get('memory', 0) / (1024*1024) if node.get('Resources', {}).get('memory') else 0,
+                    'GPU': node.get('Resources', {}).get('GPU', 0),
+                    'Última Actualización': node.get('Timestamp', 'N/A')
                 })
-            
             if nodes_data:
                 df_nodes = pd.DataFrame(nodes_data)
                 st.dataframe(df_nodes, use_container_width=True)
-            
-            # Recursos del cluster
-            st.subheader("Recursos del Cluster")
+                
+                # Mostrar alertas específicas
+                if cluster_status['dead_node_count'] > 0:
+                    st.warning(f"⚠️ Hay {cluster_status['dead_node_count']} nodo(s) que no responden. Esto puede afectar el rendimiento del cluster.")
+              # Recursos del cluster
+            st.subheader("Recursos Totales del Cluster")
             resources_df = pd.DataFrame([cluster_status['resources']]).T
-            resources_df.columns = ['Cantidad']
+            resources_df.columns = ['Cantidad Total']
+        
             st.dataframe(resources_df)
             
         else:
