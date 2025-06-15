@@ -11,7 +11,6 @@ def get_unique_key(base_key):
 def initialize_session_state():
     """Inicializa todas las variables de session_state necesarias"""
     
-    # Estados principales de la aplicación
     if 'training_results' not in st.session_state:
         st.session_state.training_results = None
     if 'sequential_results' not in st.session_state:
@@ -19,23 +18,20 @@ def initialize_session_state():
     if 'training_in_progress' not in st.session_state:
         st.session_state.training_in_progress = False
     
-    # Configuración de dataset y modelos
     if 'current_dataset' not in st.session_state:
         st.session_state.current_dataset = 'iris'
     if 'selected_models' not in st.session_state:
         st.session_state.selected_models = ['RandomForest', 'GradientBoosting', 'LogisticRegression', 'SVM']
     
-    # Configuración de entrenamiento
+
     if 'test_size' not in st.session_state:
         st.session_state.test_size = 0.3
     if 'enable_fault_tolerance' not in st.session_state:
         st.session_state.enable_fault_tolerance = True
-    
-    # Configuración de interfaz
+
     if 'auto_refresh' not in st.session_state:
         st.session_state.auto_refresh = False
-    
-    # Configuración de tolerancia a fallos
+
     if 'fault_config' not in st.session_state:
         st.session_state.fault_config = {
             'max_retries': 3,
@@ -44,18 +40,16 @@ def initialize_session_state():
             'enable_auto_retry': True,
             'monitoring_interval': 30
         }
-    
-    # Logs y monitoreo
+
     if 'fault_logs' not in st.session_state:
         st.session_state.fault_logs = []
     if 'monitoring_active' not in st.session_state:
         st.session_state.monitoring_active = False
     
-    # Contadores y claves únicas para evitar duplicaciones
+
     if 'widget_counter' not in st.session_state:
         st.session_state.widget_counter = 0
-    
-    # Estados de visualización
+
     if 'last_refresh' not in st.session_state:
         st.session_state.last_refresh = datetime.now()
 

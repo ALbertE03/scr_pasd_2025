@@ -21,7 +21,6 @@ def render_overview_tab(cluster_status, system_metrics):
     """Renderiza la pestaña de vista general"""
     st.header("Vista General del Cluster")
     
-    # Métricas principales
     col1, col2, col3, col4, col5 = st.columns(5)
     
     with col1:
@@ -32,7 +31,6 @@ def render_overview_tab(cluster_status, system_metrics):
         )
     
     with col2:
-        # Mostrar nodos muertos con indicador visual
         dead_count = cluster_status['dead_node_count']
         delta_color = "inverse" if dead_count > 0 else "normal"
         st.metric(
@@ -64,9 +62,7 @@ def render_overview_tab(cluster_status, system_metrics):
             delta="Disponibles" if cluster_status['total_gpus'] > 0 else "No disponibles"
         )
     
-    # Gráficos de métricas del cluster
     if cluster_status['connected']:
-        # Alerta si hay nodos muertos
         if cluster_status['dead_node_count'] > 0:
             st.error(
                 f"⚠️ **ATENCIÓN**: {cluster_status['dead_node_count']} nodo(s) están muertos. "
@@ -85,19 +81,15 @@ def render_training_tab(cluster_status):
         st.warning("Debes conectarte al cluster para ejecutar entrenamientos")
         return
     
-    # Crear tabs para diferentes opciones de entrenamiento
     training_tabs = st.tabs([
         "🚀 Entrenamiento Avanzado",
-        "🔄 Entrenamiento Básico",
         "📊 Métricas en Tiempo Real"
     ])
     
     with training_tabs[0]:
         render_advanced_training(cluster_status)
         
-
-        
-    with training_tabs[2]:
+    with training_tabs[1]:
         render_realtime_metrics()
         
 def render_advanced_training(cluster_status):
@@ -114,7 +106,6 @@ def render_advanced_training(cluster_status):
     col1, col2 = st.columns([3, 2])
     
     with col1:
-        # Configuración del dataset
         datasets = ['iris', 'wine', 'breast_cancer', 'digits', 'diabetes']
         selected_dataset = st.selectbox(
             "Dataset",
@@ -124,15 +115,43 @@ def render_advanced_training(cluster_status):
         )
         st.session_state.current_dataset = selected_dataset
         
-        # Configuración de modelos
         model_options = [
+            # Modelos basados en árboles
             "RandomForest", 
             "GradientBoosting", 
-            "SVM", 
-            "LogisticRegression",
-            "KNN", 
+            "AdaBoost",
+            "ExtraTrees",
             "DecisionTree", 
-            "XGBoost"
+            "XGBoost",
+            
+            # Modelos lineales
+            "LogisticRegression",
+            "SGD",
+            "PassiveAggressive",
+            
+            # Basados en vecinos
+            "KNN",
+            
+            # SVM
+            "SVM",
+            "LinearSVM",
+            
+            # Naive Bayes
+            "GaussianNB",
+            "BernoulliNB",
+            "MultinomialNB",
+            "ComplementNB",
+            
+            # Discriminant Analysis
+            "LDA",
+            "QDA",
+            
+            # Neural Networks
+            "MLP",
+            
+            # Ensembles
+            "Bagging",
+            "Voting"
         ]
         
         selected_models = st.multiselect(
@@ -145,7 +164,6 @@ def render_advanced_training(cluster_status):
         st.session_state.selected_models = selected_models
         
     with col2:
-        # Opciones avanzadas
         st.session_state.test_size = st.slider(
             "% Datos de prueba",
             min_value=0.1,
@@ -167,11 +185,9 @@ def render_advanced_training(cluster_status):
             key="advanced_show_progress_checkbox"
         )
          
-    # Sección de Hiperparámetros
     with st.expander("⚙️ Configuración de Hiperparámetros"):
         st.caption("Configure hiperparámetros específicos para cada modelo seleccionado")
         
-        # Mostramos configuración para cada modelo seleccionado
         hyperparams = {}
         
         for model in selected_models:
@@ -201,21 +217,94 @@ def render_advanced_training(cluster_status):
                     "C": cols[0].slider(f"Parámetro C ({model})", 0.1, 10.0, 1.0, 0.1),
                     "max_iter": cols[1].slider(f"Max iteraciones ({model})", 100, 1000, 100, 100),
                     "solver": cols[2].selectbox(f"Solver ({model})", ["lbfgs", "liblinear", "newton-cg"], 0)
-                }
-            elif model == "NeuralNetwork":
+                }            
+            elif model == "AdaBoost":
                 hyperparams[model] = {
-                    "hidden_layers": cols[0].slider(f"Capas ocultas ({model})", 1, 5, 2, 1),
-                    "neurons": cols[1].slider(f"Neuronas por capa ({model})", 5, 100, 32, 5),
-                    "epochs": cols[2].slider(f"Épocas ({model})", 10, 200, 50, 10)
+                    "n_estimators": cols[0].slider(f"Número de estimadores ({model})", 50, 200, 100, 10),
+                    "learning_rate": cols[1].slider(f"Tasa de aprendizaje ({model})", 0.01, 1.0, 0.1, 0.01),
+                    "algorithm": cols[2].selectbox(f"Algoritmo ({model})", ["SAMME"], 0)
                 }
-            else:
+            elif model == "ExtraTrees":
                 hyperparams[model] = {
-                    "param1": cols[0].slider(f"Parámetro 1 ({model})", 0.0, 1.0, 0.5, 0.1),
-                    "param2": cols[1].slider(f"Parámetro 2 ({model})", 0.0, 1.0, 0.5, 0.1),
-                    "param3": cols[2].slider(f"Parámetro 3 ({model})", 0.0, 1.0, 0.5, 0.1)
+                    "n_estimators": cols[0].slider(f"Número de árboles ({model})", 10, 200, 100, 10),
+                    "max_depth": cols[1].slider(f"Profundidad máxima ({model})", 2, 20, 10, 1),
+                    "min_samples_split": cols[2].slider(f"Min muestras para split ({model})", 2, 10, 2, 1)
+                }
+            elif model == "KNN":
+                hyperparams[model] = {
+                    "n_neighbors": cols[0].slider(f"Número de vecinos ({model})", 1, 20, 5, 1),
+                    "weights": cols[1].selectbox(f"Pesos ({model})", ["uniform", "distance"], 0),
+                    "algorithm": cols[2].selectbox(f"Algoritmo ({model})", ["auto", "ball_tree", "kd_tree", "brute"], 0)
+                }
+            elif model == "DecisionTree":
+                hyperparams[model] = {
+                    "max_depth": cols[0].slider(f"Profundidad máxima ({model})", 2, 20, 10, 1),
+                    "min_samples_split": cols[1].slider(f"Min muestras para split ({model})", 2, 10, 2, 1),
+                    "criterion": cols[2].selectbox(f"Criterio ({model})", ["gini", "entropy"], 0)
+                }
+            elif model == "SGD":
+                hyperparams[model] = {
+                    "alpha": cols[0].slider(f"Alpha ({model})", 0.0001, 0.1, 0.0001, 0.0001, format="%.4f"),
+                    "max_iter": cols[1].slider(f"Max iteraciones ({model})", 100, 2000, 1000, 100),
+                    "loss": cols[2].selectbox(f"Función de pérdida ({model})", ["hinge", "log_loss", "modified_huber"], 1)
+                }           
+            elif model == "PassiveAggressive":
+                hyperparams[model] = {
+                    "C": cols[0].slider(f"Parámetro C ({model})", 0.1, 10.0, 1.0, 0.1),
+                    "max_iter": cols[1].slider(f"Max iteraciones ({model})", 100, 1000, 1000, 100),
+                    "tol": cols[2].slider(f"Tolerancia ({model})", 1e-5, 1e-2, 1e-3, format="%.5f")
+                }
+            elif model == "LinearSVM":
+                hyperparams[model] = {
+                    "C": cols[0].slider(f"Parámetro C ({model})", 0.1, 10.0, 1.0, 0.1),
+                    "max_iter": cols[1].slider(f"Max iteraciones ({model})", 100, 1000, 1000, 100),
+                    "tol": cols[2].slider(f"Tolerancia ({model})", 1e-5, 1e-2, 1e-3, format="%.5f")
+                }
+            elif model == "GaussianNB":
+                hyperparams[model] = {
+                    "var_smoothing": cols[0].slider(f"Suavizado de varianza ({model})", 1e-12, 1e-6, 1e-9, format="%.2e")
+                }
+            elif model == "BernoulliNB":
+                hyperparams[model] = {
+                    "alpha": cols[0].slider(f"Alpha ({model})", 0.01, 2.0, 1.0, 0.01),
+                    "fit_prior": cols[1].checkbox(f"Ajustar prior ({model})", True)
+                }
+            elif model == "MultinomialNB":
+                hyperparams[model] = {
+                    "alpha": cols[0].slider(f"Alpha ({model})", 0.01, 2.0, 1.0, 0.01),
+                    "fit_prior": cols[1].checkbox(f"Ajustar prior ({model})", True)
+                }
+            elif model == "ComplementNB":
+                hyperparams[model] = {
+                    "alpha": cols[0].slider(f"Alpha ({model})", 0.01, 2.0, 1.0, 0.01),
+                    "fit_prior": cols[1].checkbox(f"Ajustar prior ({model})", True)
+                }
+            elif model == "LDA":
+                hyperparams[model] = {
+                    "solver": cols[0].selectbox(f"Solver ({model})", ["svd", "lsqr", "eigen"], 0),
+                    "shrinkage": cols[1].slider(f"Shrinkage ({model})", None, 1.0, None) if cols[1].checkbox(f"Usar shrinkage ({model})", False) else None
+                }
+            elif model == "QDA":
+                hyperparams[model] = {
+                    "reg_param": cols[0].slider(f"Parámetro de regularización ({model})", 0.0, 1.0, 0.0, 0.01)
+                }
+            elif model == "MLP":
+                hyperparams[model] = {
+                    "hidden_layer_sizes": (cols[0].slider(f"Neuronas capa oculta ({model})", 10, 200, 100, 10),),
+                    "activation": cols[1].selectbox(f"Activación ({model})", ["relu", "tanh", "logistic"], 0),
+                    "max_iter": cols[2].slider(f"Max iteraciones ({model})", 100, 500, 200, 50)
+                }
+            elif model == "Bagging":
+                hyperparams[model] = {
+                    "n_estimators": cols[0].slider(f"Número de estimadores ({model})", 5, 50, 10, 5),
+                    "max_samples": cols[1].slider(f"Max muestras ({model})", 0.1, 1.0, 1.0, 0.1),
+                    "bootstrap": cols[2].checkbox(f"Bootstrap ({model})", True)
+                }
+            elif model == "Voting":
+                hyperparams[model] = {
+                    "voting": cols[0].selectbox(f"Tipo de votación ({model})", ["hard", "soft"], 1)
                 }
     
-    # Sección de distribución de datos
     with st.expander("🔄 Distribución de Datos"):
         st.caption("Configure cómo se distribuirán los datos entre los nodos")
         
@@ -232,7 +321,6 @@ def render_advanced_training(cluster_status):
         elif data_distribution_strategy == "Fragmentos estratificados":
             st.info("Los datos se particionarán manteniendo la distribución de clases entre los nodos")
     
-    # Botón de inicio de entrenamiento
     col1, col2, col3 = st.columns([1,2,1])
     with col2:
         start_training = st.button(
@@ -242,7 +330,6 @@ def render_advanced_training(cluster_status):
             disabled=st.session_state.training_in_progress
         )
     
-    # Área para resultados
     results_container = st.container()
     
     if start_training:
@@ -255,7 +342,6 @@ def render_advanced_training(cluster_status):
             </div>
             """, unsafe_allow_html=True)
             
-            # Ejecutar entrenamiento avanzado
             results, training_history = run_distributed_training_advanced(
                 dataset_name=selected_dataset,
                 selected_models=selected_models,
@@ -267,19 +353,15 @@ def render_advanced_training(cluster_status):
             
             if results and len(results) > 0:
                 st.success(f"✅ Entrenamiento completado exitosamente para el dataset {selected_dataset}")
-                
-                # Actualizar resultados en session_state
+
                 st.session_state.training_results = {selected_dataset: results}
-                
-                # Mostrar métricas de entrenamiento
+
                 st.subheader("📊 Métricas de Entrenamiento")
                 plot_training_metrics(training_history, chart_prefix="advanced")
-                
-                # Comparación de modelos
+
                 st.subheader("🔍 Comparación de Modelos")
                 plot_model_comparison({selected_dataset: results}, chart_prefix="advanced")
                 
-                # Guardar resultados
                 st.session_state.last_trained_dataset = selected_dataset
                 st.session_state.last_training_history = training_history
 
@@ -294,11 +376,9 @@ def render_realtime_metrics():
     </div>
     """, unsafe_allow_html=True)
     
-    # Selección de dataset para mostrar resultados
     col1, col2 = st.columns([3, 1])
     
     with col1:
-        # Si hay un último dataset entrenado, seleccionarlo por defecto
         default_dataset = st.session_state.get('last_trained_dataset', 'iris')
         datasets = ['iris', 'wine', 'breast_cancer', 'digits', 'diabetes']
         
@@ -310,13 +390,10 @@ def render_realtime_metrics():
         )
     
     with col2:
-        # Botón para refrescar datos
         refresh = st.button("🔄 Refrescar Datos", key="refresh_metrics_button")
     
-    # Cargar datos de entrenamiento
     training_history = load_training_history(selected_dataset)
-    
-    # Crear tabs para diferentes tipos de métricas
+
     metrics_tabs = st.tabs([
         "📊 Métricas de Entrenamiento", 
         "⚡ Métricas de Inferencia"
@@ -324,43 +401,36 @@ def render_realtime_metrics():
     
     with metrics_tabs[0]:
         if training_history:
-            # Mostrar métricas de entrenamiento
+
             plot_training_metrics(training_history, chart_prefix="realtime")
         else:
             st.info(f"No hay datos de entrenamiento disponibles para {selected_dataset}. Entrene primero usando la pestaña de Entrenamiento Avanzado.")
         with metrics_tabs[1]:
-        # Cargar datos reales del dataset seleccionado
             results = load_training_results()
             
             if results and selected_dataset in results:
-                # Solo pasamos los datos del dataset seleccionado
                 dataset_results = {selected_dataset: results[selected_dataset]}
                 plot_inference_metrics(dataset_results, chart_prefix="realtime")
                 st.caption("Nota: Los datos de inferencia se basan en el rendimiento real de los modelos entrenados")
             else:
-                # No pasamos datos, la función manejará el caso de no tener modelos
                 plot_inference_metrics({}, chart_prefix="realtime")
 
 def render_results_tab():
     """Renderiza la pestaña de resultados"""
     st.header("Resultados de Entrenamiento")
-    
-    # Tabs dentro de la pestaña de resultados
+
     results_tab1, results_tab2, results_tab3 = st.tabs([
         "📊 Resultados por Dataset", 
         "📈 Comparación de Datasets", 
         "📁 Modelos Guardados"
     ])
-    
-    # Tab 1: Resultados por dataset
+
     with results_tab1:
-        # Carga de resultados existentes
         training_results = load_training_results()
         
         if not training_results:
             st.info("No hay resultados de entrenamiento disponibles. Ejecuta un entrenamiento primero.")
         else:
-            # Selector de dataset para resultados
             dataset_options = list(training_results.keys())
             if dataset_options:
                 selected_dataset = st.selectbox(
@@ -369,13 +439,11 @@ def render_results_tab():
                     index=0,
                     key="results_dataset_select"
                 )
-                
-                # Mostrar resultados del dataset seleccionado
+
                 dataset_results = training_results.get(selected_dataset, {})
                 if dataset_results:
                     st.subheader(f"Resultados para dataset: {selected_dataset}")
-                    
-                    # Tabla de resultados
+
                     results_data = []
                     for model_name, metrics in dataset_results.items():
                         results_data.append({
@@ -389,18 +457,16 @@ def render_results_tab():
                     if results_data:
                         results_df = pd.DataFrame(results_data)
                         st.dataframe(results_df, use_container_width=True)
-                        
-                        # Visualización gráfica
+ 
                         st.subheader("Visualización")
-                        
-                        # Gráficos específicos del dataset
+
                         plot_model_comparison({selected_dataset: dataset_results}, chart_prefix="single_dataset")
                     else:
                         st.warning("No hay datos de modelos para este dataset")
                 else:
                     st.warning("No hay resultados disponibles para este dataset")
     
-    # Tab 2: Comparación entre datasets
+
     with results_tab2:
         all_results = load_training_results()
         execution_summary = load_execution_summary()
@@ -409,8 +475,7 @@ def render_results_tab():
             st.info("No hay resultados de entrenamiento disponibles para comparar datasets.")
         else:
             st.subheader("Comparación entre Datasets")
-            
-            # Mostrar resumen de ejecución si está disponible
+
             if execution_summary:
                 col1, col2, col3 = st.columns(3)
                 
@@ -432,15 +497,12 @@ def render_results_tab():
                         "Tiempo Total (s)", 
                         f"{execution_summary.get('total_execution_time', 0):.2f}"
                     )
-            
-            # Gráficos de comparación entre datasets
+
             plot_cross_dataset_comparison(all_results)
     
-    # Tab 3: Modelos guardados
     with results_tab3:
         st.subheader("Modelos Guardados")
-        
-        # Buscar modelos guardados
+
         model_files = []
         model_dirs = ['models_iris', 'models_wine', 'models_breast_cancer']
         
@@ -458,12 +520,10 @@ def render_results_tab():
         if model_files:
             models_df = pd.DataFrame(model_files)
             st.dataframe(models_df, use_container_width=True)
-            
-            # Opción para descargar los modelos (simulada)
+
             if st.button("📥 Exportar Modelos Seleccionados", key="export_models_btn"):
                 st.success("Modelos exportados correctamente")
-                
-                # Mostrar código de ejemplo de cómo cargar los modelos
+
                 st.subheader("Código para cargar modelos:")
                 st.code("""
                 import pickle
@@ -482,7 +542,6 @@ def render_system_metrics_tab(system_metrics):
     """Renderiza la pestaña de métricas del sistema"""
     st.header("Métricas del Sistema")
     
-    # Métricas principales del sistema host
     col1, col2, col3 = st.columns(3)
     
     with col1:
@@ -569,7 +628,6 @@ def render_system_metrics_tab(system_metrics):
         )
         st.plotly_chart(fig, use_container_width=True)
     
-    # Detalles adicionales
     st.subheader("Detalles del Sistema")
     
     col1, col2 = st.columns(2)
@@ -602,16 +660,13 @@ def render_system_metrics_tab(system_metrics):
         disk_df = pd.DataFrame(disk_data)
         st.dataframe(disk_df, use_container_width=True)
     
-    # Métricas históricas (simuladas para este ejemplo)
     st.subheader("Métricas Históricas")
     
-    # Simulación de datos históricos
     import numpy as np
     timestamps = [f"{i}:00" for i in range(9, 21)]  # 9 AM - 8 PM
     cpu_history = np.clip(system_metrics.get('cpu_percent', 50) + np.random.normal(0, 10, len(timestamps)), 0, 100)
     memory_history = np.clip(system_metrics.get('memory_percent', 40) + np.random.normal(0, 5, len(timestamps)), 0, 100)
-    
-    # Gráfico de líneas para datos históricos
+
     fig = go.Figure()
     
     fig.add_trace(go.Scatter(
@@ -669,13 +724,10 @@ def render_fault_tolerance_tab():
     
     st.header("Monitoreo de Tolerancia a Fallos")
     
-    # Obtener estadísticas de tolerancia a fallos
     fault_stats = get_fault_tolerance_stats()
-    
-    # Métricas de salud principales
+
     col1, col2, col3, col4 = st.columns(4)
     
-    # Valores para métricas (usar datos reales si están disponibles)
     failed_tasks = fault_stats.get('failed_tasks', 0) if fault_stats else 0
     recovered_tasks = fault_stats.get('recovered_tasks', 0) if fault_stats else 0
     cluster_nodes = fault_stats.get('total_nodes', 4) if fault_stats else 4  # Default a 4 si no hay datos
@@ -713,10 +765,8 @@ def render_fault_tolerance_tab():
             delta_color=delta_color
         )
     
-    # Dashboard de salud del cluster
     st.subheader("🏥 Salud del Cluster")
     
-    # Indicador visual de salud
     health_score = min(100, (alive_nodes / max(cluster_nodes, 1)) * 100 - (failed_tasks * 5))
     health_color = "green" if health_score >= 80 else "orange" if health_score >= 60 else "red"
     
@@ -751,10 +801,8 @@ def render_fault_tolerance_tab():
         st.plotly_chart(fig_health, use_container_width=True, key="fault_tolerance_health_gauge")
     
     with col2:
-        # Log de eventos de tolerancia a fallos
         st.markdown("**📝 Log de Eventos Recientes**")
         
-        # Simular algunos logs si no hay datos reales
         if not st.session_state.fault_logs:
             sample_logs = [
                 {"time": "2025-06-14 10:30:15", "event": "Sistema iniciado", "type": "info"},
@@ -763,15 +811,13 @@ def render_fault_tolerance_tab():
             ]
             st.session_state.fault_logs = sample_logs
         
-        for log in st.session_state.fault_logs[-5:]:  # Mostrar últimos 5
+        for log in st.session_state.fault_logs[-5:]:  
             icon = "ℹ️" if log["type"] == "info" else "✅" if log["type"] == "success" else "⚠️"
             st.text(f"{icon} {log['time']}: {log['event']}")
-    
-    # Detalles de tareas fallidas
+
     if fault_stats and fault_stats.get('failed_task_details'):
         st.subheader("❌ Análisis de Fallos Detallado")
         
-        # Tabs para diferentes vistas de fallos
         fault_tab1, fault_tab2, fault_tab3 = st.tabs(["📋 Lista de Fallos", "📊 Análisis", "🔍 Diagnóstico"])
         
         with fault_tab1:
@@ -789,13 +835,11 @@ def render_fault_tolerance_tab():
             if failed_tasks_data:
                 failed_df = pd.DataFrame(failed_tasks_data)
                 st.dataframe(failed_df, use_container_width=True)
-                  # Botón para exportar fallos
                 if st.button("📥 Exportar Log de Fallos", key="fault_export_failures_btn"):
                     st.success("Log de fallos exportado a fault_log.json")
         
         with fault_tab2:
             if failed_tasks_data:
-                # Gráfico de fallos por modelo
                 failed_df = pd.DataFrame(failed_tasks_data)
                 fail_counts = failed_df['Modelo'].value_counts()
                 
@@ -817,7 +861,7 @@ def render_fault_tolerance_tab():
                     st.plotly_chart(fig_fails, use_container_width=True, key="fault_analysis_fails_by_model")
                 
                 with col2:
-                    # Fallos por nodo
+
                     node_counts = failed_df['Nodo'].value_counts()                            
                     fig_nodes_fault = px.pie(
                         values=node_counts.values,
@@ -832,8 +876,7 @@ def render_fault_tolerance_tab():
         
         with fault_tab3:
             st.markdown("**🔍 Diagnóstico Automático**")
-            
-            # Análisis automático de patrones de fallo
+
             if failed_tasks_data:
                 failed_df = pd.DataFrame(failed_tasks_data)
                 total_failures = len(failed_tasks_data)
@@ -844,8 +887,7 @@ def render_fault_tolerance_tab():
                 st.write(f"• Total de fallos detectados: {total_failures}")
                 st.write(f"• Modelo con más fallos: {most_failing_model}")
                 st.write(f"• Nodo con más fallos: {most_failing_node}")
-                
-                # Recomendaciones automáticas
+
                 st.markdown("**💡 Recomendaciones:**")
                 if total_failures > 10:
                     st.warning("- Considerar aumentar el timeout de entrenamiento")
@@ -856,8 +898,7 @@ def render_fault_tolerance_tab():
                     st.info(f"- Optimizar parámetros del modelo {most_failing_model}")
     else:
         st.success("✅ No hay tareas fallidas registradas - Sistema funcionando correctamente")
-    
-    # Configuración avanzada de tolerancia a fallos
+
     st.subheader("⚙️ Configuración de Tolerancia a Fallos")        
     config_tab1, config_tab2, config_tab3 = st.tabs(["🔧 Básico", "🚀 Avanzado", "📊 Monitoreo"])
     
@@ -929,7 +970,7 @@ def render_fault_tolerance_tab():
             )
     
     with config_tab3:
-        # Activar/desactivar monitoreo
+
         st.session_state.monitoring_active = st.toggle(
             "Activar monitoreo en vivo",
             value=st.session_state.monitoring_active,
@@ -938,17 +979,14 @@ def render_fault_tolerance_tab():
         
         if st.session_state.monitoring_active:
             st.info("Monitoreo activo - registrando eventos del cluster")
-            
-            # Simular algo de actividad de monitoreo
+
             st.markdown("**📊 Eventos en tiempo real**")
-            
-            # Placeholder para gráfico de eventos en tiempo real
+
             import random
             import numpy as np
             
-            # Simulación de datos de monitoreo
-            timestamps = [f"{i}" for i in range(1, 11)]  # 1-10 periodos
-            events = np.random.randint(0, 5, size=10)  # Eventos aleatorios
+            timestamps = [f"{i}" for i in range(1, 11)]  
+            events = np.random.randint(0, 5, size=10)  
             
             # Gráfico de eventos
             fig = px.bar(
@@ -970,19 +1008,16 @@ def plot_training_metrics(training_history, chart_prefix=""):
     if not training_history or not isinstance(training_history, dict):
         st.warning("No hay datos de historial de entrenamiento disponibles")
         return
-    
-    # Preparamos los datos para gráficas de barras comparativas
+
     metrics_data = []
     
     for model_name, history in training_history.items():
         if not history or not isinstance(history, dict):
             continue
-        
-        # Solo procesar si hay métricas disponibles
+
         if 'accuracy' not in history or history['accuracy'] is None:
             continue
             
-        # Crear un registro para este modelo
         entry = {
             'Model': model_name,
             'Accuracy': float(history.get('accuracy', 0)),
@@ -990,8 +1025,7 @@ def plot_training_metrics(training_history, chart_prefix=""):
             'Loss': float(history.get('loss', 0)),
             'Val_Loss': float(history.get('val_loss', 0))
         }
-        
-        # Normalizar valores de accuracy
+
         if entry['Accuracy'] > 1:
             entry['Accuracy'] = min(1.0, entry['Accuracy'] / 100)
         if entry['Val_Accuracy'] > 1:
@@ -1005,19 +1039,16 @@ def plot_training_metrics(training_history, chart_prefix=""):
         
     df = pd.DataFrame(metrics_data)
     
-    # Mostrar información del DataFrame para depuración
     with st.expander("Información del DataFrame generado", expanded=False):
         st.write("Columnas disponibles:", df.columns.tolist())
         st.write("Número de filas:", len(df))
         st.write("Valores únicos en 'Model':", df['Model'].unique().tolist())
         st.write("Datos completos:")
         st.write(df)
-    
-    # Crear columnas para los gráficos
+
     col1, col2 = st.columns(2)
     
     with col1:
-        # Gráfico de precisión (barras)
         fig_accuracy = px.bar(
             df,
             x="Model",
@@ -1028,7 +1059,7 @@ def plot_training_metrics(training_history, chart_prefix=""):
             color_discrete_sequence=px.colors.qualitative.Bold
         )
         
-        # Configurar aspecto
+
         fig_accuracy.update_layout(
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
             xaxis=dict(title="Modelo"),
@@ -1043,7 +1074,6 @@ def plot_training_metrics(training_history, chart_prefix=""):
         st.plotly_chart(fig_accuracy, use_container_width=True, key=f"{chart_prefix}_accuracy_plot")
     
     with col2:
-        # Gráfico de pérdida (barras)
         fig_loss = px.bar(
             df,
             x="Model",
@@ -1054,10 +1084,10 @@ def plot_training_metrics(training_history, chart_prefix=""):
             color_discrete_sequence=px.colors.qualitative.Bold
         )
         
-        # Calcular el valor máximo para el eje y
+
         loss_max = df[["Loss", "Val_Loss"]].values.max() * 1.2 if len(df) > 0 else 2.0
         
-        # Configurar aspecto
+
         fig_loss.update_layout(
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
             xaxis=dict(title="Modelo"),

@@ -22,7 +22,7 @@ from modules.training import (
     get_fault_tolerance_stats
 )
 
-# Configuración de la página
+
 st.set_page_config(
     page_title="Ray ML Cluster Dashboard",
     page_icon="🚀",
@@ -34,13 +34,12 @@ st.set_page_config(
     }
 )
 
-# Cargar estilos CSS personalizados desde el módulo utils
+
 load_custom_styles()
 
-# Inicializar variables de sesión
+
 initialize_session_state()
 
-# Encabezado de la página
 st.markdown("""
 <div class="dashboard-header">
     <h1>🚀 Ray ML Cluster Dashboard</h1>
@@ -48,7 +47,7 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# Barra de menús principal
+
 tab_titles = [
     "📊 Vista General",
     "🔍 Estado del Cluster",
@@ -60,15 +59,13 @@ tab_titles = [
 
 tabs = st.tabs(tab_titles)
 
-# Refrescar estado del cluster
 cluster_status = get_cluster_status()
 system_metrics = get_system_metrics()
 
-# Añadir opción de auto-refresco
+
 with st.sidebar:
     st.title("⚙️ Configuración")
     
-    # Auto-refresh toggle
     auto_refresh = st.toggle(
         "Auto-Refresh (30s)",
         value=st.session_state.auto_refresh,
@@ -77,16 +74,14 @@ with st.sidebar:
     
     if auto_refresh:
         st.session_state.auto_refresh = True
-        time.sleep(0.1)  # Pequeña pausa
+        time.sleep(0.1)  
         st.rerun()
     else:
         st.session_state.auto_refresh = False
     
-    # Botón de refresh manual
     if st.button("🔄 Actualizar Ahora", key=get_unique_key("refresh_button")):
         st.experimental_rerun()
     
-    # Información del cluster
     st.sidebar.markdown("---")
     st.sidebar.subheader("🖥️ Información del Cluster")
     
@@ -99,15 +94,13 @@ with st.sidebar:
     else:
         st.sidebar.error(f"❌ Cluster no conectado: {cluster_status.get('error', 'Error desconocido')}")
     
-    # Hora de actualización
     st.sidebar.markdown("---")
     st.sidebar.caption(f"Última actualización: {datetime.now().strftime('%H:%M:%S')}")
     
-    # Versión
     st.sidebar.markdown("---")
     st.sidebar.caption("v2.0 - Junio 2025")
 
-# Renderizar cada pestaña usando las funciones de los módulos
+
 with tabs[0]:
     render_overview_tab(cluster_status, system_metrics)
 
@@ -126,7 +119,6 @@ with tabs[4]:
 with tabs[5]:
     render_fault_tolerance_tab()
 
-# Auto-refresh si está habilitado
 if st.session_state.auto_refresh:
-    time.sleep(30)  # Esperar 30 segundos
     st.rerun()
+    time.sleep(10) 
