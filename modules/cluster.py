@@ -5,6 +5,7 @@ import psutil
 import pandas as pd
 import plotly.graph_objects as go
 import time
+import subprocess
 
 @st.cache_data(ttl=30)
 def get_cluster_status():
@@ -193,8 +194,95 @@ def render_cluster_status_tab(cluster_status):
     """Renderiza la pestaña de estado detallado del cluster"""
     st.header("Estado Detallado del Cluster")
     
-    if cluster_status['connected']:
+    if cluster_status['connected']:        # Sección para gestión de nodos (añadir/eliminar)
+        st.subheader("� Gestión de Nodos del Cluster")
+        
+        tab1, tab2 = st.tabs(["📌 Añadir Nodo", "🗑️ Eliminar Nodo"])
+        
+        with tab1:
+            with st.expander("ℹ️ Información sobre añadir nodos", expanded=False):
+                st.info("""
+                **Añadir un nuevo nodo** expande la capacidad de procesamiento del cluster Ray.
+                
+                - Cada nodo añade 2 CPUs adicionales al cluster
+                - Los nodos se ejecutan como contenedores Docker
+                - Los nodos se conectan automáticamente al nodo principal (ray-head)
+                - Un nombre único facilita la identificación del nodo en el dashboard
+                """)
+            
+            with st.form("add_node_form"):
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    worker_name = st.text_input("Nombre del Nodo", 
+                                               key="worker_name", 
+                                               placeholder="ej: worker-gpu1",
+                                               help="Nombre personalizado para identificar este nodo en el cluster")
+            with col2:
+                st.write("")
+                st.write("")
+                add_node_btn = st.form_submit_button("Añadir Nodo", 
+                                                    use_container_width=True,
+                                                    type="primary")
+            if add_node_btn and worker_name:
+                with st.spinner(f"Añadiendo nuevo nodo '{worker_name}' al cluster..."):
+                    success = add_external_worker(worker_name)
+                    
+                    if success:
+                        st.info("Puede tardar unos segundos en reflejarse en el dashboard del cluster.")
+                        st.cache_data.clear()
+                        st.rerun()
+            elif not worker_name and add_node_btn:
+                st.warning("Por favor ingresa un nombre para el nodo")
+        
+        with tab2:            
+            with st.expander("ℹ️ Información sobre eliminar nodos", expanded=False):
+                st.info("""
+                **Eliminar un nodo** desconecta y elimina el contenedor Docker del nodo.
+                - El nodo dejará de estar disponible para el cluster
+                - La eliminación es permanente
+                - ⚠️ No se puede eliminar el nodo principal (ray-head)
 
+                """)
+            
+            ray_nodes = get_all_ray_nodes()
+            
+            if not ray_nodes:
+                st.warning("No se encontraron nodos Ray para eliminar.")
+                st.info("Parece que el cluster no está en ejecución o no hay contenedores Docker detectables.")
+            else:
+                st.success(f"Se encontraron {len(ray_nodes)} nodos en el cluster Ray.")
+                
+                with st.form("remove_node_form"):
+                    col1, col2 = st.columns([3, 1])
+                    with col1:
+                        node_to_remove = st.selectbox(
+                            "Selecciona el Nodo a Eliminar", 
+                            options=ray_nodes,
+                            key="node_to_remove", 
+                            help="Selecciona el nodo que deseas eliminar del cluster"
+                        )
+                    with col2:
+                        st.write("")
+                        st.write("")
+                        remove_node_btn = st.form_submit_button("Eliminar Nodo", 
+                                                            use_container_width=True,
+                                                            type="primary")
+                    
+                    # Agregar advertencia para nodos críticos
+                    if node_to_remove and "ray-head" in node_to_remove:
+                        st.error("⚠️ ADVERTENCIA: Estás intentando eliminar el nodo principal del cluster.")
+                        st.info("Eliminar este nodo detendrá todo el cluster. Usa la opción 'Stop Ray Cluster' en su lugar.")
+                    
+                    if remove_node_btn and node_to_remove:
+                        with st.spinner(f"Eliminando nodo '{node_to_remove}' del cluster..."):
+                            success = remove_ray_node(node_to_remove)
+                            
+                            if success:
+                                st.info("El nodo ha sido eliminado. Puede tardar unos segundos en reflejarse en el dashboard.")
+                                st.cache_data.clear()
+                                st.rerun()
+        
+        st.divider()
         st.subheader("Estado de los Nodos del Cluster")
         
         col1, col2, col3 = st.columns(3)
@@ -284,5 +372,89 @@ def render_cluster_status_tab(cluster_status):
         st.error("Cluster no conectado")
         st.warning(f"Error: {cluster_status.get('error', 'Desconocido')}")
         st.info("Por favor verifica que el cluster Ray esté en ejecución y sea accesible desde esta máquina.")
+
+
+def add_external_worker(worker_name):
+    """Añade un worker externo usando docker compose directamente"""
+    try:
+
+        
+        env = os.environ.copy()
+        env["WORKER_NAME"] = worker_name
+
+        command = ["docker-compose", "-f", 'docker-compose.external.yml', "up", "-d"]
+        
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            env=env,
+            shell=True
+        )
+        
+        if result.returncode == 0:
+            st.success(f"Worker externo '{worker_name}' añadido exitosamente al cluster")
+            return True
+        else:
+            st.error(f"Error al añadir worker externo: {result.stderr}")
+            return False
+    except Exception as e:
+        st.error(f"Excepción al añadir worker externo: {str(e)}")
+        return False
+
+def remove_ray_node(node_name):
+    """Elimina un nodo Ray usando su nombre"""
+    try:
+        # Si es el nodo principal, mostrar una advertencia y no permitir eliminarlo
+        if node_name.startswith("ray-head") or node_name == "ray-head":
+            st.error("No se puede eliminar el nodo principal (ray-head), ya que es necesario para el funcionamiento del cluster")
+            st.info("Si deseas detener todo el cluster, usa la opción 'Stop Ray Cluster' en el menú de tareas")
+            return False
+            
+        # Ejecutar el comando docker stop y rm para eliminar el contenedor
+        command = f"docker stop {node_name} && docker rm {node_name}"
+        
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            shell=True
+        )
+        
+        if result.returncode == 0:
+            st.success(f"Nodo '{node_name}' eliminado exitosamente del cluster")
+            return True
+        else:
+            st.error(f"Error al eliminar nodo: {result.stderr}")
+            return False
+    except Exception as e:
+        st.error(f"Excepción al eliminar nodo: {str(e)}")
+        return False
+
+def get_all_ray_nodes():
+    """Obtiene la lista de todos los nodos Ray ejecutándose actualmente"""
+    try:
+        # Ejecutar comando para listar contenedores con formato específico (todos los relacionados con ray)
+        command = "docker ps --filter 'name=ray' --format '{{.Names}}'"
+        
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            shell=True
+        )
+        
+        if result.returncode == 0:
+            # Procesar la salida para obtener los nombres de los contenedores
+            node_names = result.stdout.strip().split('\n')
+            # Filtrar líneas vacías
+            node_names = [name for name in node_names if name]
+            return node_names
+        else:
+            st.warning(f"No se pudieron listar los nodos: {result.stderr}")
+            return []
+    except Exception as e:
+        st.warning(f"Error al obtener nodos: {str(e)}")
+        return []
 
 

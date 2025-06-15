@@ -1,7 +1,8 @@
 services:
   ray-external-worker:
     build: .
-    hostname: ray-external-worker
+    hostname: ${WORKER_NAME:-ray-external-worker}
+    container_name: ${WORKER_NAME:-ray-external-worker}
     networks:
       - ray-network
     environment:
