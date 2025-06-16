@@ -719,13 +719,17 @@ def render_system_metrics_tab(system_metrics):
 def render_fault_tolerance_tab():
     """Renderiza la pestaña de tolerancia a fallos"""
     from .training import get_fault_tolerance_stats
+    from .failover import get_failover_status
     import os
+    import time
     from datetime import datetime
     
     st.header("Monitoreo de Tolerancia a Fallos")
     
     fault_stats = get_fault_tolerance_stats()
+    failover_status = get_failover_status()
 
+    # Panel superior con métricas generales
     col1, col2, col3, col4 = st.columns(4)
     
     failed_tasks = fault_stats.get('failed_tasks', 0) if fault_stats else 0
@@ -765,14 +769,15 @@ def render_fault_tolerance_tab():
             delta_color=delta_color
         )
     
+    # Sección de salud del cluster
     st.subheader("🏥 Salud del Cluster")
     
-    health_score = min(100, (alive_nodes / max(cluster_nodes, 1)) * 100 - (failed_tasks * 5))
-    health_color = "green" if health_score >= 80 else "orange" if health_score >= 60 else "red"
-    
-    col1, col2 = st.columns([1, 2])
+    col1, col2 = st.columns(2)
     
     with col1:
+        health_score = min(100, (alive_nodes / max(cluster_nodes, 1)) * 100 - (failed_tasks * 5))
+        health_color = "green" if health_score >= 80 else "orange" if health_score >= 60 else "red"
+        
         fig_health = go.Figure(go.Indicator(
             mode="gauge+number+delta",
             value=health_score,
@@ -798,210 +803,71 @@ def render_fault_tolerance_tab():
             paper_bgcolor='rgba(0,0,0,0)',
             plot_bgcolor='rgba(0,0,0,0)'
         )
-        st.plotly_chart(fig_health, use_container_width=True, key="fault_tolerance_health_gauge")
+        st.plotly_chart(fig_health, use_container_width=True)
     
     with col2:
-        st.markdown("**📝 Log de Eventos Recientes**")
+        # Mostrar información sobre el sistema de Failover
+        st.subheader("👑 Sistema de Failover del Nodo Líder")
         
-        if not st.session_state.fault_logs:
-            sample_logs = [
-                {"time": "2025-06-14 10:30:15", "event": "Sistema iniciado", "type": "info"},
-                {"time": "2025-06-14 10:32:20", "event": "Nodo ray-worker-1 conectado", "type": "success"},
-                {"time": "2025-06-14 10:35:45", "event": "Reintento automático en RandomForest", "type": "warning"},
-            ]
-            st.session_state.fault_logs = sample_logs
+        # Indicador del estado de monitorización
+        monitor_status = "🟢 Activo (automático)" if failover_status["monitoring_active"] else "🔴 Inactivo"
+        st.info(f"**Estado del Monitor de Failover:** {monitor_status}")
         
-        for log in st.session_state.fault_logs[-5:]:  
-            icon = "ℹ️" if log["type"] == "info" else "✅" if log["type"] == "success" else "⚠️"
-            st.text(f"{icon} {log['time']}: {log['event']}")
-
-    if fault_stats and fault_stats.get('failed_task_details'):
-        st.subheader("❌ Análisis de Fallos Detallado")
+        # Indicador del estado del nodo líder
+        leader_status = "🟢 Saludable" if failover_status["original_head_healthy"] else "🔴 Caído"
+        st.info(f"**Estado del Nodo Líder Original:** {leader_status}")
         
-        fault_tab1, fault_tab2, fault_tab3 = st.tabs(["📋 Lista de Fallos", "📊 Análisis", "🔍 Diagnóstico"])
+        # Nodo líder actual
+        st.info(f"**Nodo Líder Actual:** {failover_status['active_head_node']}")
         
-        with fault_tab1:
-            failed_tasks_data = []
+        # Estadísticas de failover
+        if failover_status["failover_count"] > 0:
+            st.warning(f"**Se han producido {failover_status['failover_count']} failovers** desde el inicio del sistema.")
             
-            for failed_task in fault_stats['failed_task_details']:
-                failed_tasks_data.append({
-                    'Modelo': failed_task.get('model_name', 'N/A'),
-                    'Nodo': failed_task.get('node_id', 'N/A'),
-                    'Error': failed_task.get('error', 'Error desconocido')[:50] + "...",
-                    'Timestamp': failed_task.get('timestamp', 'N/A'),
-                    'Estado': failed_task.get('status', 'failed')
-                })
-            
-            if failed_tasks_data:
-                failed_df = pd.DataFrame(failed_tasks_data)
-                st.dataframe(failed_df, use_container_width=True)
-                if st.button("📥 Exportar Log de Fallos", key="fault_export_failures_btn"):
-                    st.success("Log de fallos exportado a fault_log.json")
+            if failover_status["last_failover_time"]:
+                last_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(failover_status["last_failover_time"]))
+                st.info(f"**Último failover:** {last_time}")
+        else:
+            st.success("**No se han producido failovers** desde el inicio del sistema.")
+    
+    # Sección de nodos de respaldo
+    st.subheader("📋 Nodos de Respaldo para Failover")
+    
+    if failover_status["backup_nodes"]:
+        backup_data = []
+        for i, node in enumerate(failover_status["backup_nodes"]):
+            backup_data.append({
+                "Posición": i+1,
+                "Nombre del Nodo": node,
+                "Estado": "En espera",
+                "Prioridad de Promoción": "Alta" if i == 0 else "Media" if i == 1 else "Baja"
+            })
         
-        with fault_tab2:
-            if failed_tasks_data:
-                failed_df = pd.DataFrame(failed_tasks_data)
-                fail_counts = failed_df['Modelo'].value_counts()
-                
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    fig_fails = px.bar(
-                        x=fail_counts.index,
-                        y=fail_counts.values,
-                        title="Fallos por Modelo",
-                        labels={'x': 'Modelo', 'y': 'Número de Fallos'},
-                        color=fail_counts.values,
-                        color_continuous_scale="Reds"
-                    )
-                    fig_fails.update_layout(
-                        paper_bgcolor='rgba(0,0,0,0)',
-                        plot_bgcolor='rgba(0,0,0,0)'
-                    )
-                    st.plotly_chart(fig_fails, use_container_width=True, key="fault_analysis_fails_by_model")
-                
-                with col2:
-
-                    node_counts = failed_df['Nodo'].value_counts()                            
-                    fig_nodes_fault = px.pie(
-                        values=node_counts.values,
-                        names=node_counts.index,
-                        title="Distribución de Fallos por Nodo"
-                    )
-                    fig_nodes_fault.update_layout(
-                        paper_bgcolor='rgba(0,0,0,0)',
-                        plot_bgcolor='rgba(0,0,0,0)'
-                    )
-                    st.plotly_chart(fig_nodes_fault, use_container_width=True, key="fault_analysis_fails_by_node_pie")
-        
-        with fault_tab3:
-            st.markdown("**🔍 Diagnóstico Automático**")
-
-            if failed_tasks_data:
-                failed_df = pd.DataFrame(failed_tasks_data)
-                total_failures = len(failed_tasks_data)
-                most_failing_model = failed_df['Modelo'].mode().iloc[0] if not failed_df.empty else "N/A"
-                most_failing_node = failed_df['Nodo'].mode().iloc[0] if not failed_df.empty else "N/A"
-                
-                st.info(f"**Análisis Automático:**")
-                st.write(f"• Total de fallos detectados: {total_failures}")
-                st.write(f"• Modelo con más fallos: {most_failing_model}")
-                st.write(f"• Nodo con más fallos: {most_failing_node}")
-
-                st.markdown("**💡 Recomendaciones:**")
-                if total_failures > 10:
-                    st.warning("- Considerar aumentar el timeout de entrenamiento")
-                    st.warning("- Verificar la estabilidad de la red del cluster")
-                if most_failing_node != "N/A":
-                    st.warning(f"- Revisar la conectividad del nodo {most_failing_node}")
-                if most_failing_model != "N/A":
-                    st.info(f"- Optimizar parámetros del modelo {most_failing_model}")
+        st.dataframe(pd.DataFrame(backup_data), use_container_width=True)
     else:
-        st.success("✅ No hay tareas fallidas registradas - Sistema funcionando correctamente")
-
-    st.subheader("⚙️ Configuración de Tolerancia a Fallos")        
-    config_tab1, config_tab2, config_tab3 = st.tabs(["🔧 Básico", "🚀 Avanzado", "📊 Monitoreo"])
+        st.warning("No hay nodos de respaldo configurados. Se necesitan al menos 2 workers para tener failover.")
+        st.info("Añada más nodos workers al cluster para mejorar la tolerancia a fallos.")
     
-    with config_tab1:
-        col1, col2 = st.columns(2)
+    # Información sobre el sistema de failover
+    with st.expander("ℹ️ Información sobre el Sistema de Failover", expanded=False):
+        st.info("""
+        **Sistema Automático de Failover para Ray**
         
-        with col1:
-            st.session_state.fault_config['max_retries'] = st.slider(
-                "Máximo de reintentos",
-                min_value=1,
-                max_value=10,
-                value=st.session_state.fault_config.get('max_retries', 3),
-                key="fault_max_retries_slider"
-            )
-            
-            st.session_state.fault_config['timeout_seconds'] = st.slider(
-                "Timeout de tarea (segundos)",
-                min_value=30,
-                max_value=600,
-                value=st.session_state.fault_config.get('timeout_seconds', 300),
-                step=30,
-                key="fault_timeout_slider"
-            )
+        Este sistema monitoriza continuamente el estado del nodo líder (ray-head) y, en caso de fallo, 
+        promueve automáticamente uno de los nodos worker a líder para mantener la continuidad del cluster.
         
-        with col2:
-            st.session_state.fault_config['enable_reconstruction'] = st.checkbox(
-                "Habilitar reconstrucción de objetos",
-                value=st.session_state.fault_config.get('enable_reconstruction', True),
-                key="fault_reconstruction_cb"
-            )
-            
-            st.session_state.fault_config['enable_auto_retry'] = st.checkbox(
-                "Reintento automático",
-                value=st.session_state.fault_config.get('enable_auto_retry', True),
-                key="fault_auto_retry_cb"
-            )
-    
-    with config_tab2:
-        col1, col2 = st.columns(2)
+        **Funcionamiento:**
+        - El monitor se ejecuta automáticamente en segundo plano
+        - Verifica periódicamente el estado del nodo líder
+        - Si el nodo líder falla, selecciona un worker para promoción
+        - Reconfigura la red para que todos los nodos se conecten al nuevo líder
+        - Mantiene el cluster operativo sin intervención manual
         
-        with col1:
-            st.number_input(
-                "Intervalo de monitoreo (segundos)",
-                min_value=5,
-                max_value=120,
-                value=st.session_state.fault_config.get('monitoring_interval', 30),
-                key="fault_monitoring_interval"
-            )
-            
-            st.text_input(
-                "Emails para notificaciones",
-                value=st.session_state.fault_config.get('notification_emails', ''),
-                key="fault_notification_emails"
-            )
-        
-        with col2:
-            st.selectbox(
-                "Estrategia de reintento",
-                options=["Inmediato", "Backoff exponencial", "Intervalo fijo", "Aleatorio"],
-                index=1,
-                key="fault_retry_strategy"
-            )
-            
-            st.selectbox(
-                "Nivel de logging",
-                options=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
-                index=1,
-                key="fault_log_level"
-            )
-    
-    with config_tab3:
-
-        st.session_state.monitoring_active = st.toggle(
-            "Activar monitoreo en vivo",
-            value=st.session_state.monitoring_active,
-            key="fault_monitoring_toggle"
-        )
-        
-        if st.session_state.monitoring_active:
-            st.info("Monitoreo activo - registrando eventos del cluster")
-
-            st.markdown("**📊 Eventos en tiempo real**")
-
-            import random
-            import numpy as np
-            
-            timestamps = [f"{i}" for i in range(1, 11)]  
-            events = np.random.randint(0, 5, size=10)  
-            
-            # Gráfico de eventos
-            fig = px.bar(
-                x=timestamps,
-                y=events,
-                title="Eventos por Periodo de Monitoreo",
-                labels={'x': 'Periodo', 'y': 'Número de Eventos'}
-            )
-            fig.update_layout(
-                height=250,
-                paper_bgcolor='rgba(0,0,0,0)',
-                plot_bgcolor='rgba(0,0,0,0)',
-                margin=dict(l=20, r=20, t=60, b=40)
-            )
-            st.plotly_chart(fig, use_container_width=True)
+        **Beneficios:**
+        - Elimina el punto único de fallo del cluster Ray
+        - Garantiza alta disponibilidad para aplicaciones críticas
+        - Minimiza el tiempo de inactividad en caso de fallos
+        """)
 
 def plot_training_metrics(training_history, chart_prefix=""):
     """Visualiza métricas de rendimiento de los modelos"""

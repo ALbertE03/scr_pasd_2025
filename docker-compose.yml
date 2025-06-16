@@ -11,6 +11,10 @@ services:
       - ray-network
     environment:
       - RAY_HEAD_SERVICE_HOST=ray-head
+      - NODE_ROLE=worker
+      - LEADER_NODE=false
+      - FAILOVER_PRIORITY=3
+      - ENABLE_AUTO_FAILOVER=false
     shm_size: 2gb
     command: >
       bash -c "
@@ -29,7 +33,6 @@ services:
     volumes:
       - .:/app
     restart: unless-stopped
-
   streamlit-app:
     build: .
     container_name: streamlit-app
@@ -42,6 +45,10 @@ services:
       - ray-network
     environment:
       - RAY_HEAD_SERVICE_HOST=ray-head
+      - NODE_ROLE=worker
+      - LEADER_NODE=false
+      - FAILOVER_PRIORITY=3
+      - ENABLE_AUTO_FAILOVER=false
     command: >
       bash -c "
       sleep 15 &&
@@ -50,6 +57,7 @@ services:
       "
     volumes:
       - .:/app
+      - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped
   ray-worker-1:
     build: .
@@ -61,6 +69,10 @@ services:
       - ray-network
     environment:
       - RAY_HEAD_SERVICE_HOST=ray-head
+      - NODE_ROLE=worker
+      - LEADER_NODE=false
+      - FAILOVER_PRIORITY=3
+      - ENABLE_AUTO_FAILOVER=false
     shm_size: 2gb
     command: >
       bash -c "
@@ -89,6 +101,10 @@ services:
       - ray-network
     environment:
       - RAY_HEAD_SERVICE_HOST=ray-head
+      - NODE_ROLE=worker
+      - LEADER_NODE=false
+      - FAILOVER_PRIORITY=3
+      - ENABLE_AUTO_FAILOVER=false
     shm_size: 2gb
     command: >
       bash -c "
@@ -117,6 +133,10 @@ services:
       - ray-network
     environment:
       - RAY_HEAD_SERVICE_HOST=ray-head
+      - NODE_ROLE=worker
+      - LEADER_NODE=false
+      - FAILOVER_PRIORITY=3
+      - ENABLE_AUTO_FAILOVER=false
     shm_size: 2gb
     command: >
       bash -c "

@@ -375,20 +375,50 @@ def render_cluster_status_tab(cluster_status):
 
 
 def add_external_worker(worker_name):
-    """Añade un worker externo usando docker compose directamente"""
+    """Añade un worker externo usando docker directamente"""
     try:
-
+        # Detectar si estamos dentro de un contenedor Docker
+        in_docker = os.path.exists('/.dockerenv')
         
-        env = os.environ.copy()
-        env["WORKER_NAME"] = worker_name
-
-        command = ["docker-compose", "-f", 'docker-compose.external.yml', "up", "-d"]
+        if in_docker:
+            # Si estamos dentro de un contenedor, usamos el API de Docker a través del socket 
+            st.info("Detectado entorno Docker, utilizando método alternativo para añadir worker...")
+            
+            # Verificar si tenemos acceso al socket de Docker
+            socket_exists = os.path.exists('/var/run/docker.sock')
+            if not socket_exists:
+                st.error("No se puede acceder al socket de Docker desde dentro del contenedor.")
+                st.info("Para añadir workers externos, ejecuta este comando desde el host o asegúrate de montar el socket de Docker.")
+                return False
+              # Comando para crear un worker directamente usando docker run
+            command = f"""
+            docker run -d --name {worker_name} \
+            --hostname {worker_name} \
+            --network scr_pasd_2025_ray-network \
+            -e RAY_HEAD_SERVICE_HOST=ray-head \
+            -e NODE_ROLE=worker \
+            -e LEADER_NODE=false \
+            -e FAILOVER_PRIORITY=3 \
+            -e ENABLE_AUTO_FAILOVER=false \
+            --shm-size=2gb \
+            scr_pasd_2025-ray-head \
+            bash -c "echo 'Worker externo iniciando...' && \
+                    echo 'Esperando al cluster principal...' && \
+                    sleep 10 && \
+                    echo 'Conectando al cluster existente...' && \
+                    ray start --address=ray-head:6379 --num-cpus=2 --object-manager-port=8076 \
+                    --node-manager-port=8077 --min-worker-port=10002 --max-worker-port=19999 && \
+                    echo 'Worker externo conectado exitosamente!' && \
+                    tail -f /dev/null"
+            """
+        else:
+           
+            command = f"powershell -ExecutionPolicy Bypass -File add_external_worker.ps1 -WorkerName {worker_name}"
         
         result = subprocess.run(
             command,
             capture_output=True,
             text=True,
-            env=env,
             shell=True
         )
         

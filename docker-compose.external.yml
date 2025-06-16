@@ -7,6 +7,10 @@ services:
       - ray-network
     environment:
       - RAY_HEAD_SERVICE_HOST=ray-head
+      - NODE_ROLE=worker
+      - LEADER_NODE=false
+      - FAILOVER_PRIORITY=3
+      - ENABLE_AUTO_FAILOVER=false
     shm_size: 2gb
     command: >
       bash -c "

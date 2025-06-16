@@ -8,7 +8,10 @@ RUN pip install --upgrade pip
 
 RUN pip install --no-cache-dir -r requirements.txt
 
-RUN apt-get update && apt-get install -y procps net-tools && apt-get clean
+RUN apt-get update && apt-get install -y procps net-tools curl gnupg lsb-release && apt-get clean
+
+# Instalar Docker CLI para poder controlar Docker desde dentro del contenedor
+RUN curl -fsSL https://get.docker.com | sh
 
 COPY . .
 

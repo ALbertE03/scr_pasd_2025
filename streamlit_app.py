@@ -21,7 +21,9 @@ from modules.training import (
     run_sequential_training,
     get_fault_tolerance_stats
 )
+from modules.failover import configure_failover_at_startup
 
+configure_failover_at_startup()
 
 st.set_page_config(
     page_title="Ray ML Cluster Dashboard",
@@ -121,4 +123,4 @@ with tabs[5]:
 
 if st.session_state.auto_refresh:
     st.rerun()
-    time.sleep(10) 
+    time.sleep(10)

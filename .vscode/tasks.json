@@ -57,6 +57,56 @@
 			"problemMatcher": []
 		},
 		{
+			"label": "Promote Worker To Leader",
+			"type": "shell",
+			"command": "powershell.exe",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}/promote_worker_to_leader.ps1"
+			],
+			"group": "build",
+			"problemMatcher": []
+		},
+		{
+			"label": "Start Head Node Monitor",
+			"type": "shell",
+			"command": "powershell.exe",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}/monitor_head_node.ps1",
+				"-CheckInterval",
+				"5",
+				"-MaxRetries",
+				"3"
+			],
+			"group": "build",
+			"isBackground": true,
+			"problemMatcher": []
+		},
+		{
+			"label": "Start Head Node Monitor (with Auto-Failover)",
+			"type": "shell",
+			"command": "powershell.exe",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}/monitor_head_node.ps1",
+				"-CheckInterval",
+				"5",
+				"-MaxRetries",
+				"3",
+				"-AutoFailover"
+			],
+			"group": "build",
+			"isBackground": true,
+			"problemMatcher": []
+		},
+		{
 			"label": "Docker Compose Up",
 			"type": "shell",
 			"command": "docker-compose",

@@ -25,9 +25,11 @@ def initialize_session_state():
     
 
     if 'test_size' not in st.session_state:
-        st.session_state.test_size = 0.3
-    if 'enable_fault_tolerance' not in st.session_state:
+        st.session_state.test_size = 0.3  
         st.session_state.enable_fault_tolerance = True
+        
+    if 'enable_leader_failover' not in st.session_state:
+        st.session_state.enable_leader_failover = True
 
     if 'auto_refresh' not in st.session_state:
         st.session_state.auto_refresh = False
