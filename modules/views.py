@@ -16,8 +16,12 @@ from .training import (
     plot_inference_metrics,
     load_training_history
 )
+from datetime import datetime
+from .training import get_fault_tolerance_stats
+import time
 
 def render_overview_tab(cluster_status, system_metrics):
+
     """Renderiza la pestaña de vista general"""
     st.header("Vista General del Cluster")
     
@@ -716,158 +720,6 @@ def render_system_metrics_tab(system_metrics):
     
     st.plotly_chart(fig, use_container_width=True)
 
-def render_fault_tolerance_tab():
-    """Renderiza la pestaña de tolerancia a fallos"""
-    from .training import get_fault_tolerance_stats
-    from .failover import get_failover_status
-    import os
-    import time
-    from datetime import datetime
-    
-    st.header("Monitoreo de Tolerancia a Fallos")
-    
-    fault_stats = get_fault_tolerance_stats()
-    failover_status = get_failover_status()
-
-    # Panel superior con métricas generales
-    col1, col2, col3, col4 = st.columns(4)
-    
-    failed_tasks = fault_stats.get('failed_tasks', 0) if fault_stats else 0
-    recovered_tasks = fault_stats.get('recovered_tasks', 0) if fault_stats else 0
-    cluster_nodes = fault_stats.get('total_nodes', 4) if fault_stats else 4  # Default a 4 si no hay datos
-    alive_nodes = fault_stats.get('alive_nodes', cluster_nodes) if fault_stats else cluster_nodes
-    
-    with col1:
-        st.metric(
-            "Tareas Fallidas", 
-            failed_tasks,
-            delta="require atención" if failed_tasks > 0 else "todo ok"
-        )
-    
-    with col2:
-        recover_rate = (recovered_tasks / max(failed_tasks, 1)) * 100 if failed_tasks > 0 else 100
-        st.metric(
-            "Tareas Recuperadas", 
-            recovered_tasks,
-            delta=f"{recover_rate:.1f}% tasa de recuperación"
-        )
-    
-    with col3:
-        st.metric(
-            "Nodos Vivos", 
-            alive_nodes,
-            delta=f"de {cluster_nodes} total"
-        )
-    
-    with col4:
-        uptime_percentage = (alive_nodes / max(cluster_nodes, 1)) * 100 if cluster_nodes > 0 else 0
-        delta_color = "normal" if uptime_percentage >= 80 else "inverse"
-        st.metric(
-            "Uptime (%)", 
-            f"{uptime_percentage:.1f}%",
-            delta="Saludable" if uptime_percentage >= 80 else "Atención requerida",
-            delta_color=delta_color
-        )
-    
-    # Sección de salud del cluster
-    st.subheader("🏥 Salud del Cluster")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        health_score = min(100, (alive_nodes / max(cluster_nodes, 1)) * 100 - (failed_tasks * 5))
-        health_color = "green" if health_score >= 80 else "orange" if health_score >= 60 else "red"
-        
-        fig_health = go.Figure(go.Indicator(
-            mode="gauge+number+delta",
-            value=health_score,
-            domain={'x': [0, 1], 'y': [0, 1]},
-            title={'text': "Salud del Cluster"},
-            gauge={
-                'axis': {'range': [None, 100]},
-                'bar': {'color': health_color},
-                'steps': [
-                    {'range': [0, 60], 'color': "lightcoral"},
-                    {'range': [60, 80], 'color': "lightyellow"},
-                    {'range': [80, 100], 'color': "lightgreen"}
-                ],
-                'threshold': {
-                    'line': {'color': "red", 'width': 4},
-                    'thickness': 0.75, 
-                    'value': 80
-                }
-            }
-        ))                
-        fig_health.update_layout(
-            height=250,
-            paper_bgcolor='rgba(0,0,0,0)',
-            plot_bgcolor='rgba(0,0,0,0)'
-        )
-        st.plotly_chart(fig_health, use_container_width=True)
-    
-    with col2:
-        # Mostrar información sobre el sistema de Failover
-        st.subheader("👑 Sistema de Failover del Nodo Líder")
-        
-        # Indicador del estado de monitorización
-        monitor_status = "🟢 Activo (automático)" if failover_status["monitoring_active"] else "🔴 Inactivo"
-        st.info(f"**Estado del Monitor de Failover:** {monitor_status}")
-        
-        # Indicador del estado del nodo líder
-        leader_status = "🟢 Saludable" if failover_status["original_head_healthy"] else "🔴 Caído"
-        st.info(f"**Estado del Nodo Líder Original:** {leader_status}")
-        
-        # Nodo líder actual
-        st.info(f"**Nodo Líder Actual:** {failover_status['active_head_node']}")
-        
-        # Estadísticas de failover
-        if failover_status["failover_count"] > 0:
-            st.warning(f"**Se han producido {failover_status['failover_count']} failovers** desde el inicio del sistema.")
-            
-            if failover_status["last_failover_time"]:
-                last_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(failover_status["last_failover_time"]))
-                st.info(f"**Último failover:** {last_time}")
-        else:
-            st.success("**No se han producido failovers** desde el inicio del sistema.")
-    
-    # Sección de nodos de respaldo
-    st.subheader("📋 Nodos de Respaldo para Failover")
-    
-    if failover_status["backup_nodes"]:
-        backup_data = []
-        for i, node in enumerate(failover_status["backup_nodes"]):
-            backup_data.append({
-                "Posición": i+1,
-                "Nombre del Nodo": node,
-                "Estado": "En espera",
-                "Prioridad de Promoción": "Alta" if i == 0 else "Media" if i == 1 else "Baja"
-            })
-        
-        st.dataframe(pd.DataFrame(backup_data), use_container_width=True)
-    else:
-        st.warning("No hay nodos de respaldo configurados. Se necesitan al menos 2 workers para tener failover.")
-        st.info("Añada más nodos workers al cluster para mejorar la tolerancia a fallos.")
-    
-    # Información sobre el sistema de failover
-    with st.expander("ℹ️ Información sobre el Sistema de Failover", expanded=False):
-        st.info("""
-        **Sistema Automático de Failover para Ray**
-        
-        Este sistema monitoriza continuamente el estado del nodo líder (ray-head) y, en caso de fallo, 
-        promueve automáticamente uno de los nodos worker a líder para mantener la continuidad del cluster.
-        
-        **Funcionamiento:**
-        - El monitor se ejecuta automáticamente en segundo plano
-        - Verifica periódicamente el estado del nodo líder
-        - Si el nodo líder falla, selecciona un worker para promoción
-        - Reconfigura la red para que todos los nodos se conecten al nuevo líder
-        - Mantiene el cluster operativo sin intervención manual
-        
-        **Beneficios:**
-        - Elimina el punto único de fallo del cluster Ray
-        - Garantiza alta disponibilidad para aplicaciones críticas
-        - Minimiza el tiempo de inactividad en caso de fallos
-        """)
 
 def plot_training_metrics(training_history, chart_prefix=""):
     """Visualiza métricas de rendimiento de los modelos"""

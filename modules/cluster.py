@@ -240,7 +240,7 @@ def render_cluster_status_tab(cluster_status):
                 **Eliminar un nodo** desconecta y elimina el contenedor Docker del nodo.
                 - El nodo dejará de estar disponible para el cluster
                 - La eliminación es permanente
-                - ⚠️ No se puede eliminar el nodo principal (ray-head)
+                - ⚠️ No se puede eliminar el nodo principal 
 
                 """)
             
@@ -267,11 +267,6 @@ def render_cluster_status_tab(cluster_status):
                         remove_node_btn = st.form_submit_button("Eliminar Nodo", 
                                                             use_container_width=True,
                                                             type="primary")
-                    
-                    # Agregar advertencia para nodos críticos
-                    if node_to_remove and "ray-head" in node_to_remove:
-                        st.error("⚠️ ADVERTENCIA: Estás intentando eliminar el nodo principal del cluster.")
-                        st.info("Eliminar este nodo detendrá todo el cluster. Usa la opción 'Stop Ray Cluster' en su lugar.")
                     
                     if remove_node_btn and node_to_remove:
                         with st.spinner(f"Eliminando nodo '{node_to_remove}' del cluster..."):
@@ -377,23 +372,17 @@ def render_cluster_status_tab(cluster_status):
 def add_external_worker(worker_name):
     """Añade un worker externo usando docker directamente"""
     try:
-        # Detectar si estamos dentro de un contenedor Docker
         in_docker = os.path.exists('/.dockerenv')
         
         if in_docker:
-            # Si estamos dentro de un contenedor, usamos el API de Docker a través del socket 
-            st.info("Detectado entorno Docker, utilizando método alternativo para añadir worker...")
-            
-            # Verificar si tenemos acceso al socket de Docker
             socket_exists = os.path.exists('/var/run/docker.sock')
             if not socket_exists:
                 st.error("No se puede acceder al socket de Docker desde dentro del contenedor.")
                 st.info("Para añadir workers externos, ejecuta este comando desde el host o asegúrate de montar el socket de Docker.")
                 return False
-              # Comando para crear un worker directamente usando docker run
             command = f"""
-            docker run -d --name {worker_name} \
-            --hostname {worker_name} \
+            docker run -d --name ray_worker_{worker_name} \
+            --hostname ray_worker_{worker_name} \
             --network scr_pasd_2025_ray-network \
             -e RAY_HEAD_SERVICE_HOST=ray-head \
             -e NODE_ROLE=worker \
@@ -412,8 +401,7 @@ def add_external_worker(worker_name):
                     tail -f /dev/null"
             """
         else:
-           
-            command = f"powershell -ExecutionPolicy Bypass -File add_external_worker.ps1 -WorkerName {worker_name}"
+            st.info("ejecute el contenedor de docker ")
         
         result = subprocess.run(
             command,
@@ -423,7 +411,7 @@ def add_external_worker(worker_name):
         )
         
         if result.returncode == 0:
-            st.success(f"Worker externo '{worker_name}' añadido exitosamente al cluster")
+            st.success(f"Worker externo 'ray_worker_{worker_name}' añadido exitosamente al cluster")
             return True
         else:
             st.error(f"Error al añadir worker externo: {result.stderr}")
@@ -435,13 +423,10 @@ def add_external_worker(worker_name):
 def remove_ray_node(node_name):
     """Elimina un nodo Ray usando su nombre"""
     try:
-        # Si es el nodo principal, mostrar una advertencia y no permitir eliminarlo
         if node_name.startswith("ray-head") or node_name == "ray-head":
-            st.error("No se puede eliminar el nodo principal (ray-head), ya que es necesario para el funcionamiento del cluster")
-            st.info("Si deseas detener todo el cluster, usa la opción 'Stop Ray Cluster' en el menú de tareas")
+            st.info("No se puede eliminar el nodo principal (ray-head), ya que es necesario para el funcionamiento del cluster")
             return False
             
-        # Ejecutar el comando docker stop y rm para eliminar el contenedor
         command = f"docker stop {node_name} && docker rm {node_name}"
         
         result = subprocess.run(
@@ -464,7 +449,7 @@ def remove_ray_node(node_name):
 def get_all_ray_nodes():
     """Obtiene la lista de todos los nodos Ray ejecutándose actualmente"""
     try:
-        # Ejecutar comando para listar contenedores con formato específico (todos los relacionados con ray)
+ 
         command = "docker ps --filter 'name=ray' --format '{{.Names}}'"
         
         result = subprocess.run(
@@ -475,9 +460,7 @@ def get_all_ray_nodes():
         )
         
         if result.returncode == 0:
-            # Procesar la salida para obtener los nombres de los contenedores
             node_names = result.stdout.strip().split('\n')
-            # Filtrar líneas vacías
             node_names = [name for name in node_names if name]
             return node_names
         else:

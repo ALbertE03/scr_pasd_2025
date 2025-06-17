@@ -13,7 +13,6 @@ from modules.views import (
     render_training_tab,
     render_results_tab, 
     render_system_metrics_tab,
-    render_fault_tolerance_tab
 )
 from modules.training import (
     load_training_results,
@@ -21,9 +20,7 @@ from modules.training import (
     run_sequential_training,
     get_fault_tolerance_stats
 )
-from modules.failover import configure_failover_at_startup
 
-configure_failover_at_startup()
 
 st.set_page_config(
     page_title="Ray ML Cluster Dashboard",
@@ -56,7 +53,6 @@ tab_titles = [
     "🧠 Entrenamiento ML",
     "📈 Resultados",
     "💻 Métricas del Sistema",
-    "🛡️ Tolerancia a Fallos"
 ]
 
 tabs = st.tabs(tab_titles)
@@ -117,9 +113,6 @@ with tabs[3]:
 
 with tabs[4]:
     render_system_metrics_tab(system_metrics)
-
-with tabs[5]:
-    render_fault_tolerance_tab()
 
 if st.session_state.auto_refresh:
     st.rerun()
