@@ -130,6 +130,23 @@
 			"group": "build",
 			"isBackground": true,
 			"problemMatcher": []
+		},
+		{
+			"label": "Start ML API",
+			"type": "shell",
+			"command": "python",
+			"args": ["api.py"],
+			"group": "build",
+			"isBackground": true,
+			"problemMatcher": []
+		},
+		{
+			"label": "Start ML API (Docker)",
+			"type": "shell",
+			"command": "docker-compose",
+			"args": ["up", "-d", "ml-api"],
+			"group": "build",
+			"problemMatcher": []
 		}
 	]
 }

@@ -495,3 +495,102 @@ def connect_to_ray_cluster(max_retries=3):
     
     logger.error(f"No se pudo conectar al clúster Ray después de {max_retries} intentos")
     return False
+
+def save_system_metrics_history(metrics):
+    """Guarda las métricas del sistema en un archivo de historial"""
+    try:
+        history_file = 'system_metrics_history.json'
+        
+        # Cargar historial existente
+        if os.path.exists(history_file):
+            with open(history_file, 'r') as f:
+                history = json.load(f)
+        else:
+            history = []
+        
+        # Agregar timestamp actual
+        metrics['timestamp'] = datetime.now().isoformat()
+        
+        # Agregar nueva entrada
+        history.append(metrics)
+        
+        # Mantener solo las últimas 24 horas (asumiendo una entrada cada 5 minutos)
+        max_entries = 24 * 12  # 288 entradas
+        if len(history) > max_entries:
+            history = history[-max_entries:]
+        
+        # Guardar historial actualizado
+        with open(history_file, 'w') as f:
+            json.dump(history, f, indent=2)
+            
+    except Exception as e:
+        logger.error(f"Error guardando historial de métricas: {e}")
+
+def load_system_metrics_history():
+    """Carga el historial de métricas del sistema"""
+    try:
+        history_file = 'system_metrics_history.json'
+        
+        if os.path.exists(history_file):
+            with open(history_file, 'r') as f:
+                history = json.load(f)
+            
+            # Filtrar últimas 12 horas para el gráfico
+            now = datetime.now()
+            twelve_hours_ago = now - timedelta(hours=12)
+            
+            filtered_history = []
+            for entry in history:
+                entry_time = datetime.fromisoformat(entry['timestamp'])
+                if entry_time >= twelve_hours_ago:
+                    filtered_history.append(entry)
+            
+            return filtered_history
+        else:
+            return []
+            
+    except Exception as e:
+        logger.error(f"Error cargando historial de métricas: {e}")
+        return []
+
+def get_metrics_for_timeframe(hours=12):
+    """Obtiene métricas para un marco de tiempo específico"""
+    history = load_system_metrics_history()
+    
+    if not history:
+        return {
+            'timestamps': [],
+            'cpu_values': [],
+            'memory_values': [],
+            'disk_values': []
+        }
+    
+    timestamps = []
+    cpu_values = []
+    memory_values = []
+    disk_values = []
+    
+    for entry in history:
+        try:
+            timestamp = datetime.fromisoformat(entry['timestamp'])
+            timestamps.append(timestamp.strftime('%H:%M'))
+            cpu_values.append(entry.get('cpu_percent', 0))
+            memory_values.append(entry.get('memory_percent', 0))
+            disk_values.append(entry.get('disk_percent', 0))
+        except Exception as e:
+            logger.warning(f"Error procesando entrada de historial: {e}")
+            continue
+    
+    return {
+        'timestamps': timestamps,
+        'cpu_values': cpu_values,
+        'memory_values': memory_values,
+        'disk_values': disk_values
+    }
+
+def start_metrics_collection():
+    """Inicia la recolección automática de métricas del sistema"""
+    # Esta función puede ser llamada desde un background task
+    # Para simplificar, por ahora solo retorna True
+    # En un sistema real, esto podría iniciar un thread separado
+    return True

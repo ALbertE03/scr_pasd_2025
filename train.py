@@ -296,20 +296,43 @@ class DistributedMLTrainer:
         for model_name, result in self.results.items():
             serializable_result = result.copy()
             serializable_result.pop('model', None)
-            serializable_results[model_name] = serializable_result
-        
+            serializable_results[model_name] = serializable_result        
         with open(filename, 'w') as f:
             json.dump(serializable_results, f, indent=2)
         print(f"Resultados guardados en: {filename}")
     
     def save_models(self, directory="models"):
-        """Guarda los modelos entrenados"""
+        """Guarda TODOS los modelos entrenados exitosamente"""
         os.makedirs(directory, exist_ok=True)
+        
+        saved_count = 0
         for model_name, model in self.trained_models.items():
-            filename = os.path.join(directory, f"{model_name}.pkl")
-            with open(filename, 'wb') as f:
-                pickle.dump(model, f)
-        print(f"Modelos guardados en directorio: {directory}")
+            try:
+                filename = os.path.join(directory, f"{model_name}.pkl")
+                with open(filename, 'wb') as f:
+                    pickle.dump(model, f)
+                saved_count += 1
+                logger.info(f"Modelo {model_name} guardado en: {filename}")
+            except Exception as e:
+                logger.error(f"Error guardando modelo {model_name}: {e}")
+        
+        print(f"Modelos guardados en directorio: {directory} ({saved_count} modelos)")
+        
+        # También crear estructura para API
+        api_directory = os.path.join("models", directory.split("_")[-1] if "_" in directory else "default")
+        os.makedirs(api_directory, exist_ok=True)
+        
+        # Copiar modelos para la API
+        import shutil
+        for model_name, model in self.trained_models.items():
+            try:
+                source_file = os.path.join(directory, f"{model_name}.pkl")
+                dest_file = os.path.join(api_directory, f"{model_name}.pkl")
+                if os.path.exists(source_file):
+                    shutil.copy2(source_file, dest_file)
+                    logger.info(f"Modelo {model_name} copiado para API: {dest_file}")
+            except Exception as e:
+                logger.error(f"Error copiando modelo {model_name} para API: {e}")
     
     def get_cluster_info(self):
         """Obtiene información del cluster Ray"""
@@ -455,5 +478,6 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    #main()
+    pass
 

@@ -111,18 +111,35 @@ def plot_model_comparison(results_data, chart_prefix="default"):
     st.plotly_chart(fig2, use_container_width=True, key=f"{chart_prefix}_model_comparison_accuracy_scatter")
 
 def run_distributed_training(dataset_name, selected_models, enable_fault_tolerance=True):
-    """Ejecuta entrenamiento distribuido con tolerancia a fallos"""
+    """Ejecuta entrenamiento distribuido con tolerancia a fallos y guarda TODOS los modelos"""
     try:
         trainer = DistributedMLTrainer(enable_fault_tolerance=enable_fault_tolerance)
         
-
+        # Ejecutar entrenamiento
         results = trainer.train_models_distributed(
             dataset_name=dataset_name,
             selected_models=selected_models
         )
 
-        trainer.save_results(f"results_{dataset_name}.json")
-        trainer.save_models(f"models_{dataset_name}")
+        # Guardar resultados y TODOS los modelos entrenados
+        if results:
+            trainer.save_results(f"results_{dataset_name}.json")
+            trainer.save_models(f"models_{dataset_name}")
+            
+            # Crear estructura de directorio consistente para la API
+            api_models_dir = os.path.join("models", dataset_name)
+            os.makedirs(api_models_dir, exist_ok=True)
+            
+            # Copiar modelos al directorio de la API con estructura consistente
+            source_dir = f"models_{dataset_name}"
+            if os.path.exists(source_dir):
+                import shutil
+                for model_file in os.listdir(source_dir):
+                    if model_file.endswith('.pkl'):
+                        source_path = os.path.join(source_dir, model_file)
+                        dest_path = os.path.join(api_models_dir, model_file)
+                        shutil.copy2(source_path, dest_path)
+                        st.success(f"✅ Modelo {model_file} copiado para API")
         
         fault_stats = trainer.get_fault_tolerance_stats()
         if fault_stats and fault_stats.get('failed_tasks', 0) > 0:
@@ -155,7 +172,7 @@ def run_distributed_training(dataset_name, selected_models, enable_fault_toleran
         return None
 
 def run_sequential_training(datasets_list, selected_models):
-    """Ejecuta entrenamiento secuencial de múltiples datasets"""
+    """Ejecuta entrenamiento secuencial de múltiples datasets y guarda TODOS los modelos"""
     try:
         trainer = DistributedMLTrainer(enable_fault_tolerance=True)
 
@@ -163,6 +180,25 @@ def run_sequential_training(datasets_list, selected_models):
             datasets_list=datasets_list,
             selected_models=selected_models
         )
+
+        # Crear estructura de directorio para API y copiar todos los modelos
+        if all_results:
+            import shutil
+            for dataset_name in datasets_list:
+                if dataset_name in all_results:
+                    # Crear directorio para la API
+                    api_models_dir = os.path.join("models", dataset_name)
+                    os.makedirs(api_models_dir, exist_ok=True)
+                    
+                    # Copiar modelos al directorio de la API
+                    source_dir = f"models_{dataset_name}"
+                    if os.path.exists(source_dir):
+                        for model_file in os.listdir(source_dir):
+                            if model_file.endswith('.pkl'):
+                                source_path = os.path.join(source_dir, model_file)
+                                dest_path = os.path.join(api_models_dir, model_file)
+                                shutil.copy2(source_path, dest_path)
+                                st.success(f"✅ Modelo {model_file} ({dataset_name}) copiado para API")
 
         if 'fault_logs' in st.session_state:
             st.session_state.fault_logs.append({
@@ -678,14 +714,18 @@ def run_distributed_training_advanced(dataset_name, selected_models, hyperparame
                 node_idx = i % len(alive_nodes)
                 node_id = alive_nodes[node_idx]['NodeID']
                 training_history[model_name]['node_assignment'] = node_id
-                status_text.text(f"🚀 Distribuyendo tarea: modelo {model_name} → nodo {node_id}")
-                time.sleep(0.1)  
-        else:
-
-            for model_name, model in models_to_train.items():
                 task = train_model_with_tracking.options(num_cpus=1).remote(model, model_name, X, y, 0, 1)
                 
                 tasks.append(task)
+                task_mapping[task] = (model_name, 0)  
+                
+
+                status_text.text(f"🚀 Distribuyendo tarea: modelo {model_name} → nodo {node_id}")
+                time.sleep(0.5)  
+        else:
+
+            for model_name, model in models_to_train.items():
+                task = train_model_with_tracking.remote(model, model_name, X, y, 0, 1)
                 task_mapping[task] = (model_name, 0)  
 
         while tasks:
@@ -786,28 +826,34 @@ def run_distributed_training_advanced(dataset_name, selected_models, hyperparame
             
             models_directory = os.path.join("training_results", f"models_{dataset_name}")
             os.makedirs(models_directory, exist_ok=True)
-            
-            best_models = {}
+              # Guardar TODOS los modelos entrenados exitosamente
+            saved_models = {}
             for model_name in results.keys():
                 try:
-                    best_fold_idx = 0;
-                    best_val_acc = 0;
-
+                    # Buscar el primer modelo exitoso (ya no necesitamos el "mejor")
+                    model_saved = False
                     for task in [t for t in completed_task_results if t['model_name'] == model_name]:
-                        if task.get('status') == 'success' and 'metrics' in task:
-                            val_acc = task['metrics'].get('val_accuracy', 0)
-                            if val_acc > best_val_acc:
-                                best_val_acc = val_acc
-                                best_fold_idx = task.get('fold', 0)
-                                if 'model' in task:
-                                    best_models[model_name] = task['model']
+                        if task.get('status') == 'success' and 'model' in task:
+                            model_filename = os.path.join(models_directory, f"{model_name}.pkl")
+                            with open(model_filename, 'wb') as f:
+                                pickle.dump(task['model'], f)
+                            
+                            # Guardar métricas del modelo
+                            metrics = task.get('metrics', {})
+                            saved_models[model_name] = {
+                                'accuracy': metrics.get('val_accuracy', metrics.get('accuracy', 0)),
+                                'val_accuracy': metrics.get('val_accuracy', 0),
+                                'loss': metrics.get('loss', 0),
+                                'val_loss': metrics.get('val_loss', 0),
+                                'fold': task.get('fold', 0),
+                                'file_path': model_filename
+                            }
+                            
+                            status_text.text(f"✅ Guardado modelo {model_name} (val_acc: {metrics.get('val_accuracy', 0):.2%})")
+                            model_saved = True
+                            break
                     
-                    if model_name in best_models:
-                        model_filename = os.path.join(models_directory, f"{model_name}.pkl")
-                        with open(model_filename, 'wb') as f:
-                            pickle.dump(best_models[model_name], f)
-                        status_text.text(f"✅ Guardado mejor modelo {model_name} (fold {best_fold_idx}, val_acc: {best_val_acc:.2%})")
-                    else:
+                    if not model_saved:
                         st.warning(f"No se encontró un modelo válido para {model_name}")
                 
                 except Exception as e:

@@ -4,18 +4,15 @@ WORKDIR /app
 
 COPY requirements.txt .
 
+
 RUN pip install --upgrade pip
-
-RUN pip install --no-cache-dir -r requirements.txt
-
 RUN apt-get update && apt-get install -y procps net-tools curl gnupg lsb-release && apt-get clean
-
-# Instalar Docker CLI para poder controlar Docker desde dentro del contenedor
+RUN pip install --no-cache-dir -r requirements.txt
 RUN curl -fsSL https://get.docker.com | sh
 
 COPY . .
 
 
-EXPOSE 8265 10001 6379
+EXPOSE 8000 8265 10001 6379
 
-CMD [ "python","train.py" ]
+CMD [ "python", "api.py" ]

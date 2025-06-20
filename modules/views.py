@@ -3,7 +3,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import os 
-from .cluster import plot_cluster_metrics, render_cluster_status_tab
+from .cluster import plot_cluster_metrics, render_cluster_status_tab, get_system_metrics
 from .training import (
     plot_model_comparison, 
     plot_cross_dataset_comparison, 
@@ -18,8 +18,9 @@ from .training import (
 )
 from datetime import datetime
 from .training import get_fault_tolerance_stats
+from .utils import save_system_metrics_history, load_system_metrics_history, get_metrics_for_timeframe
 import time
-
+import numpy as np
 
 def render_training_tab(cluster_status):
     """Renderiza la pestaña de entrenamiento con capacidades avanzadas"""
@@ -363,132 +364,25 @@ def render_realtime_metrics():
             else:
                 plot_inference_metrics({}, chart_prefix="realtime")
 
-def render_results_tab():
-    """Renderiza la pestaña de resultados"""
-    st.header("Resultados de Entrenamiento")
-
-    results_tab1, results_tab2, results_tab3 = st.tabs([
-        "📊 Resultados por Dataset", 
-        "📈 Comparación de Datasets", 
-        "📁 Modelos Guardados"
-    ])
-
-    with results_tab1:
-        training_results = load_training_results()
-        
-        if not training_results:
-            st.info("No hay resultados de entrenamiento disponibles. Ejecuta un entrenamiento primero.")
-        else:
-            dataset_options = list(training_results.keys())
-            if dataset_options:
-                selected_dataset = st.selectbox(
-                    "Selecciona dataset para ver resultados",
-                    options=dataset_options,
-                    index=0,
-                    key="results_dataset_select"
-                )
-
-                dataset_results = training_results.get(selected_dataset, {})
-                if dataset_results:
-                    st.subheader(f"Resultados para dataset: {selected_dataset}")
-
-                    results_data = []
-                    for model_name, metrics in dataset_results.items():
-                        results_data.append({
-                            'Modelo': model_name,
-                            'Accuracy': f"{metrics['accuracy']:.4f}",
-                            'CV (Media)': f"{metrics['cv_mean']:.4f}",
-                            'CV (Std)': f"{metrics['cv_std']:.4f}",
-                            'Tiempo (s)': f"{metrics['training_time']:.3f}"
-                        })
-                    
-                    if results_data:
-                        results_df = pd.DataFrame(results_data)
-                        st.dataframe(results_df, use_container_width=True)
- 
-                        st.subheader("Visualización")
-
-                        plot_model_comparison({selected_dataset: dataset_results}, chart_prefix="single_dataset")
-                    else:
-                        st.warning("No hay datos de modelos para este dataset")
-                else:
-                    st.warning("No hay resultados disponibles para este dataset")
-    
-
-    with results_tab2:
-        all_results = load_training_results()
-        execution_summary = load_execution_summary()
-        
-        if not all_results:
-            st.info("No hay resultados de entrenamiento disponibles para comparar datasets.")
-        else:
-            st.subheader("Comparación entre Datasets")
-
-            if execution_summary:
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    st.metric(
-                        "Datasets Procesados", 
-                        execution_summary.get('total_datasets', 0)
-                    )
-                
-                with col2:
-                    st.metric(
-                        "Datasets Exitosos", 
-                        execution_summary.get('successful_datasets', 0),
-                        delta=f"{execution_summary.get('success_rate', 0):.1f}% éxito"
-                    )
-                
-                with col3:
-                    st.metric(
-                        "Tiempo Total (s)", 
-                        f"{execution_summary.get('total_execution_time', 0):.2f}"
-                    )
-
-            plot_cross_dataset_comparison(all_results)
-    
-    with results_tab3:
-        st.subheader("Modelos Guardados")
-
-        model_files = []
-        model_dirs = ['models_iris', 'models_wine', 'models_breast_cancer']
-        
-        for model_dir in model_dirs:
-            if os.path.exists(model_dir):
-                for model_file in os.listdir(model_dir):
-                    if model_file.endswith('.pkl'):
-                        model_files.append({
-                            'Dataset': model_dir.replace('models_', ''),
-                            'Modelo': model_file,
-                            'Tamaño': f"{os.path.getsize(os.path.join(model_dir, model_file)) / 1024:.2f} KB",
-                            'Modificado': datetime.fromtimestamp(os.path.getmtime(os.path.join(model_dir, model_file))).strftime('%Y-%m-%d %H:%M:%S')
-                        })
-        
-        if model_files:
-            models_df = pd.DataFrame(model_files)
-            st.dataframe(models_df, use_container_width=True)
-
-            if st.button("📥 Exportar Modelos Seleccionados", key="export_models_btn"):
-                st.success("Modelos exportados correctamente")
-
-                st.subheader("Código para cargar modelos:")
-                st.code("""
-                import pickle
-
-                # Cargar modelo guardado
-                with open('models_iris/RandomForest.pkl', 'rb') as f:
-                    model = pickle.load(f)
-                
-                # Realizar predicción
-                predictions = model.predict(X_test)
-                """, language="python")
-        else:
-            st.info("No hay modelos guardados disponibles. Entrena y guarda modelos primero.")
-
 def render_system_metrics_tab(system_metrics):
     """Renderiza la pestaña de métricas del sistema"""
     st.header("Métricas del Sistema")
+    
+    # Inicializar recolección de métricas si es la primera vez
+    initialize_metrics_collection()
+    
+    # Botón para refrescar métricas
+    col_refresh1, col_refresh2, col_refresh3 = st.columns([1, 1, 1])
+    with col_refresh2:
+        if st.button("🔄 Refrescar Métricas", key="refresh_system_metrics"):
+            # Obtener métricas frescas del sistema
+            fresh_metrics = get_system_metrics()
+            if fresh_metrics:
+                system_metrics.update(fresh_metrics)
+                # Guardar en historial
+                save_system_metrics_history(fresh_metrics)
+                st.success("Métricas actualizadas")
+                st.rerun()  # Refrescar la interfaz
     
     col1, col2, col3 = st.columns(3)
     
@@ -604,66 +498,159 @@ def render_system_metrics_tab(system_metrics):
                 system_metrics.get('disk_free', 0),
                 system_metrics.get('disk_total', 0) - system_metrics.get('disk_free', 0)
             ]
-        }
+        }        
         disk_df = pd.DataFrame(disk_data)
         st.dataframe(disk_df, use_container_width=True)
     
     st.subheader("Métricas Históricas")
     
-    import numpy as np
-    timestamps = [f"{i}:00" for i in range(9, 21)]  # 9 AM - 8 PM
-    cpu_history = np.clip(system_metrics.get('cpu_percent', 50) + np.random.normal(0, 10, len(timestamps)), 0, 100)
-    memory_history = np.clip(system_metrics.get('memory_percent', 40) + np.random.normal(0, 5, len(timestamps)), 0, 100)
+    # Obtener datos históricos reales
+    historical_data = get_metrics_for_timeframe(hours=12)
+    
+    # Solo mostrar gráfico si hay datos históricos reales
+    if historical_data['timestamps'] and len(historical_data['timestamps']) >= 2:
+        timestamps = historical_data['timestamps']
+        cpu_history = historical_data['cpu_values']
+        memory_history = historical_data['memory_values']
+        disk_history = historical_data['disk_values']
 
-    fig = go.Figure()
-    
-    fig.add_trace(go.Scatter(
-        x=timestamps,
-        y=cpu_history,
-        mode='lines+markers',
-        name='CPU (%)',
-        line=dict(width=3, color='#4361ee'),
-        marker=dict(size=8)
-    ))
-    
-    fig.add_trace(go.Scatter(
-        x=timestamps,
-        y=memory_history,
-        mode='lines+markers',
-        name='Memoria (%)',
-        line=dict(width=3, color='#38b000'),
-        marker=dict(size=8)
-    ))
-    
-    fig.update_layout(
-        title='Histórico de Utilización (Hoy)',
-        xaxis_title='Hora',
-        yaxis_title='Utilización (%)',
-        height=400,
-        hovermode='x unified',
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="right",
-            x=1
-        ),
-        paper_bgcolor='rgba(0,0,0,0)',
-        plot_bgcolor='rgba(0,0,0,0)',
-        xaxis=dict(
-            showgrid=True,
-            gridcolor='rgba(0,0,0,0.1)'
-        ),
-        yaxis=dict(
-            showgrid=True,
-            gridcolor='rgba(0,0,0,0.1)',
-            range=[0, 100]
-        ),
-        margin=dict(l=20, r=20, t=60, b=40)
-    )
-    
-    st.plotly_chart(fig, use_container_width=True)
-
+        fig = go.Figure()
+        
+        fig.add_trace(go.Scatter(
+            x=timestamps,
+            y=cpu_history,
+            mode='lines+markers',
+            name='CPU (%)',
+            line=dict(width=3, color='#4361ee'),
+            marker=dict(size=8)
+        ))
+        
+        fig.add_trace(go.Scatter(
+            x=timestamps,
+            y=memory_history,
+            mode='lines+markers',
+            name='Memoria (%)',
+            line=dict(width=3, color='#38b000'),
+            marker=dict(size=8)
+        ))
+        
+        fig.add_trace(go.Scatter(
+            x=timestamps,
+            y=disk_history,
+            mode='lines+markers',
+            name='Disco (%)',
+            line=dict(width=3, color='#9e0059'),
+            marker=dict(size=8)
+        ))
+        
+        fig.update_layout(
+            title='Histórico de Utilización (Últimas 12 horas)',
+            xaxis_title='Hora',
+            yaxis_title='Utilización (%)',
+            height=400,
+            hovermode='x unified',
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1
+            ),
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)',
+            xaxis=dict(
+                showgrid=True,
+                gridcolor='rgba(0,0,0,0.1)'
+            ),
+            yaxis=dict(
+                showgrid=True,
+                gridcolor='rgba(0,0,0,0.1)',
+                range=[0, 100]
+            ),
+            margin=dict(l=20, r=20, t=60, b=40)
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # Mostrar estadísticas de los datos históricos reales
+        col_stats1, col_stats2, col_stats3 = st.columns(3)
+        
+        with col_stats1:
+            if len(cpu_history) > 0:
+                st.metric(
+                    "CPU Promedio (12h)", 
+                    f"{sum(cpu_history) / len(cpu_history):.1f}%",
+                    f"{cpu_history[-1] - cpu_history[0]:.1f}%" if len(cpu_history) > 1 else None
+                )
+        
+        with col_stats2:
+            if len(memory_history) > 0:
+                st.metric(
+                    "Memoria Promedio (12h)", 
+                    f"{sum(memory_history) / len(memory_history):.1f}%",
+                    f"{memory_history[-1] - memory_history[0]:.1f}%" if len(memory_history) > 1 else None
+                )
+        
+        with col_stats3:
+            if len(disk_history) > 0:
+                st.metric(
+                    "Disco Promedio (12h)", 
+                    f"{sum(disk_history) / len(disk_history):.1f}%",
+                    f"{disk_history[-1] - disk_history[0]:.1f}%" if len(disk_history) > 1 else None
+                )
+                
+        # Información adicional sobre la recolección de métricas
+        with st.expander("ℹ️ Información sobre Métricas Históricas"):
+            st.markdown("""
+            **🔍 Fuente de Datos:**
+            - Las métricas se obtienen en tiempo real usando `psutil`
+            - Los datos históricos se almacenan localmente en `system_metrics_history.json`
+            - Se mantienen datos de las últimas 24 horas
+            
+            **📊 Frecuencia de Actualización:**
+            - Use el botón "Refrescar Métricas" para obtener datos actuales
+            - Los datos históricos se acumulan automáticamente con cada actualización
+            
+            **📈 Datos Históricos Disponibles:**
+            - Entradas registradas: {entries}
+            - Período mostrado: Últimas 12 horas
+            """.format(entries=len(historical_data['timestamps'])))
+    else:
+        # No hay suficientes datos históricos
+        st.info("📊 **Datos históricos insuficientes**")
+        st.markdown("""
+        Para ver las métricas históricas, es necesario acumular datos a lo largo del tiempo.
+        
+        **¿Cómo generar datos históricos?**
+        1. 🔄 Haga clic en "Refrescar Métricas" regularmente
+        2. ⏰ Los datos se acumularán automáticamente con cada actualización
+        3. 📈 En unas horas tendrá un gráfico histórico completo
+        
+        **Estado actual:**
+        - Entradas de datos: {entries}
+        - Tiempo mínimo requerido: 2+ entradas
+        """.format(entries=len(historical_data['timestamps']) if historical_data['timestamps'] else 0))
+        
+        # Mostrar métricas actuales como referencia
+        col_current1, col_current2, col_current3 = st.columns(3)
+        
+        with col_current1:
+            st.metric(
+                "CPU Actual", 
+                f"{system_metrics.get('cpu_percent', 0):.1f}%"
+            )
+        
+        with col_current2:
+            st.metric(
+                "Memoria Actual", 
+                f"{system_metrics.get('memory_percent', 0):.1f}%"
+            )
+        
+        with col_current3:
+            st.metric(
+                "Disco Actual", 
+                f"{system_metrics.get('disk_percent', 0):.1f}%"
+            )
 
 def plot_training_metrics(training_history, chart_prefix=""):
     """Visualiza métricas de rendimiento de los modelos"""
@@ -762,3 +749,32 @@ def plot_training_metrics(training_history, chart_prefix=""):
         )
         
         st.plotly_chart(fig_loss, use_container_width=True, key=f"{chart_prefix}_loss_plot")
+
+def initialize_metrics_collection():
+    """Inicializa la recolección de métricas del sistema si no existe historial"""
+    try:
+        historical_data = get_metrics_for_timeframe(hours=1)
+        
+        # Si no hay datos históricos, generar una entrada inicial
+        if not historical_data['timestamps']:
+            current_metrics = get_system_metrics()
+            if current_metrics:
+                save_system_metrics_history(current_metrics)
+                st.success("🔄 Sistema de métricas inicializado")
+        
+        return True
+    except Exception as e:
+        st.warning(f"No se pudo inicializar el sistema de métricas: {e}")
+        return False
+
+def auto_update_metrics():
+    """Actualiza automáticamente las métricas del sistema"""
+    try:
+        current_metrics = get_system_metrics()
+        if current_metrics:
+            save_system_metrics_history(current_metrics)
+            return current_metrics
+        return {}
+    except Exception as e:
+        st.error(f"Error actualizando métricas: {e}")
+        return {}

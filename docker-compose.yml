@@ -33,14 +33,16 @@ services:
     volumes:
       - .:/app
     restart: unless-stopped
+  
   streamlit-app:
     build: .
     container_name: streamlit-app
     hostname: streamlit-app
     ports:
-      - "8501:8501"  # Streamlit port
+      - "8501:8501"  
     depends_on:
       - ray-head
+      - ml-api
     networks:
       - ray-network
     environment:
@@ -49,15 +51,45 @@ services:
       - LEADER_NODE=false
       - FAILOVER_PRIORITY=3
       - ENABLE_AUTO_FAILOVER=false
+      - CONTAINER_NAME=streamlit-app
+      - API_BASE_URL=http://ml-api:8000
+      - ENABLE_AUTO_FAILOVER=false
     command: >
       bash -c "
       sleep 15 &&
       echo 'Starting Streamlit application...' &&
-      streamlit run streamlit_app.py --server.address=0.0.0.0 --server.port=8501
-      "
+      streamlit run streamlit_app.py --server.address=0.0.0.0 --server.port=8501"
     volumes:
       - .:/app
       - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+  
+  ml-api:
+    build: .
+    container_name: ml-api
+    hostname: ml-api
+    ports:
+      - "8000:8000" 
+    depends_on:
+      - ray-head
+    networks:
+      - ray-network
+    environment:
+      - RAY_HEAD_SERVICE_HOST=ray-head
+      - NODE_ROLE=worker
+      - LEADER_NODE=false
+      - FAILOVER_PRIORITY=2
+      - ENABLE_AUTO_FAILOVER=false
+    command: >
+      bash -c "
+      sleep 20 &&
+      echo 'Starting ML API...' &&
+      python api.py
+      "
+    volumes:
+      - .:/app
+      - ./training_results:/app/training_results
+      - ./models:/app/models
     restart: unless-stopped
   ray-worker-1:
     build: .

@@ -9,10 +9,10 @@ from datetime import datetime
 from modules.utils import initialize_session_state, load_custom_styles, get_unique_key
 from modules.cluster import get_cluster_status, get_system_metrics, render_cluster_status_tab
 from modules.views import (
-    render_training_tab,
-    render_results_tab, 
+    render_training_tab, 
     render_system_metrics_tab,
 )
+from modules.api_client import render_api_tab
 
 
 
@@ -44,7 +44,7 @@ st.markdown("""
 tab_titles = [
     "🔍 Estado del Cluster",
     "🧠 Entrenamiento ML",
-    "📈 Resultados",
+    "🌐 API de Modelos",
     "💻 Métricas del Sistema",
 ]
 
@@ -98,8 +98,9 @@ with tabs[0]:
 with tabs[1]:
     render_training_tab(cluster_status)
 
+
 with tabs[2]:
-    render_results_tab()
+    render_api_tab()
 
 with tabs[3]:
     render_system_metrics_tab(system_metrics)
