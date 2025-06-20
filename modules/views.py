@@ -2,25 +2,15 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-import os 
-from .cluster import plot_cluster_metrics, render_cluster_status_tab, get_system_metrics
+from .cluster import  get_system_metrics
 from .training import (
     plot_model_comparison, 
-    plot_cross_dataset_comparison, 
-    run_distributed_training,
     run_distributed_training_advanced,
-    run_sequential_training, 
-    load_training_results, 
-    load_execution_summary,
     plot_training_metrics,
-    plot_inference_metrics,
-    load_training_history
+
 )
-from datetime import datetime
-from .training import get_fault_tolerance_stats
-from .utils import save_system_metrics_history, load_system_metrics_history, get_metrics_for_timeframe
-import time
-import numpy as np
+from .utils import save_system_metrics_history, get_metrics_for_timeframe
+
 
 def render_training_tab(cluster_status):
     """Renderiza la pestaña de entrenamiento con capacidades avanzadas"""
@@ -32,14 +22,12 @@ def render_training_tab(cluster_status):
     
     training_tabs = st.tabs([
         "🚀 Entrenamiento Avanzado",
-        "📊 Métricas en Tiempo Real"
     ])
     
     with training_tabs[0]:
         render_advanced_training(cluster_status)
         
-    with training_tabs[1]:
-        render_realtime_metrics()
+
         
 def render_advanced_training(cluster_status):
     """Renderiza la interfaz de entrenamiento avanzado"""
@@ -122,17 +110,6 @@ def render_advanced_training(cluster_status):
             key="advanced_test_size_slider"
         )
         
-        enable_fault_tolerance = st.checkbox(
-            "🛡️ Habilitar Tolerancia a Fallos",
-            value=st.session_state.enable_fault_tolerance,
-            key="advanced_fault_tolerance_checkbox"
-        )
-        
-        visualize_progress = st.checkbox(
-            "📊 Mostrar Progreso en Tiempo Real",
-            value=True,
-            key="advanced_show_progress_checkbox"
-        )
          
     with st.expander("⚙️ Configuración de Hiperparámetros"):
         st.caption("Configure hiperparámetros específicos para cada modelo seleccionado")
@@ -254,29 +231,12 @@ def render_advanced_training(cluster_status):
                     "voting": cols[0].selectbox(f"Tipo de votación ({model})", ["hard", "soft"], 1)
                 }
     
-    with st.expander("🔄 Distribución de Datos"):
-        st.caption("Configure cómo se distribuirán los datos entre los nodos")
-        
-        data_distribution_strategy = st.radio(
-            "Estrategia de distribución",
-            ["Auto (Balanceo)", "Asignar por clases", "Fragmentos aleatorios", "Fragmentos estratificados"],
-            horizontal=True
-        )
-        
-        if data_distribution_strategy == "Asignar por clases":
-            st.info("Los datos se distribuirán asignando clases completas a cada nodo para entrenar modelos especializados")
-        elif data_distribution_strategy == "Fragmentos aleatorios":
-            st.info("Los datos se particionarán aleatoriamente entre los nodos")
-        elif data_distribution_strategy == "Fragmentos estratificados":
-            st.info("Los datos se particionarán manteniendo la distribución de clases entre los nodos")
-    
     col1, col2, col3 = st.columns([1,2,1])
     with col2:
         start_training = st.button(
             "🚀 Iniciar Entrenamiento Distribuido", 
             type="primary",
             key="advanced_start_training_button",
-            disabled=st.session_state.training_in_progress
         )
     
     results_container = st.container()
@@ -294,8 +254,7 @@ def render_advanced_training(cluster_status):
             results, training_history = run_distributed_training_advanced(
                 dataset_name=selected_dataset,
                 selected_models=selected_models,
-                hyperparameters=hyperparams,
-                enable_fault_tolerance=enable_fault_tolerance
+                hyperparameters=hyperparams
             )
             
             st.session_state.training_in_progress = False
@@ -313,56 +272,6 @@ def render_advanced_training(cluster_status):
                 
                 st.session_state.last_trained_dataset = selected_dataset
                 st.session_state.last_training_history = training_history
-
-def render_realtime_metrics():
-    """Renderiza métricas en tiempo real de modelos en producción"""
-    st.subheader("📈 Métricas en Tiempo Real")
-    
-    st.markdown("""
-    <div class="info-card">
-        <h4>🔍 Monitoreo de Rendimiento</h4>
-        <p>Visualice las estadísticas de inferencia en producción y métricas de rendimiento</p>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    col1, col2 = st.columns([3, 1])
-    
-    with col1:
-        default_dataset = st.session_state.get('last_trained_dataset', 'iris')
-        datasets = ['iris', 'wine', 'breast_cancer', 'digits', 'diabetes']
-        
-        selected_dataset = st.selectbox(
-            "Dataset",
-            options=datasets,
-            index=datasets.index(default_dataset) if default_dataset in datasets else 0,
-            key="metrics_dataset_select"
-        )
-    
-    with col2:
-        refresh = st.button("🔄 Refrescar Datos", key="refresh_metrics_button")
-    
-    training_history = load_training_history(selected_dataset)
-
-    metrics_tabs = st.tabs([
-        "📊 Métricas de Entrenamiento", 
-        "⚡ Métricas de Inferencia"
-    ])
-    
-    with metrics_tabs[0]:
-        if training_history:
-
-            plot_training_metrics(training_history, chart_prefix="realtime")
-        else:
-            st.info(f"No hay datos de entrenamiento disponibles para {selected_dataset}. Entrene primero usando la pestaña de Entrenamiento Avanzado.")
-        with metrics_tabs[1]:
-            results = load_training_results()
-            
-            if results and selected_dataset in results:
-                dataset_results = {selected_dataset: results[selected_dataset]}
-                plot_inference_metrics(dataset_results, chart_prefix="realtime")
-                st.caption("Nota: Los datos de inferencia se basan en el rendimiento real de los modelos entrenados")
-            else:
-                plot_inference_metrics({}, chart_prefix="realtime")
 
 def render_system_metrics_tab(system_metrics):
     """Renderiza la pestaña de métricas del sistema"""
@@ -688,12 +597,7 @@ def plot_training_metrics(training_history, chart_prefix=""):
         
     df = pd.DataFrame(metrics_data)
     
-    with st.expander("Información del DataFrame generado", expanded=False):
-        st.write("Columnas disponibles:", df.columns.tolist())
-        st.write("Número de filas:", len(df))
-        st.write("Valores únicos en 'Model':", df['Model'].unique().tolist())
-        st.write("Datos completos:")
-        st.write(df)
+    
 
     col1, col2 = st.columns(2)
     
