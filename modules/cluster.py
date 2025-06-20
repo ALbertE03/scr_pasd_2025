@@ -190,10 +190,60 @@ def plot_cluster_metrics(cluster_status):
         )
         st.plotly_chart(fig_nodes, use_container_width=True, key="cluster_nodes_status")
 
-def render_cluster_status_tab(cluster_status):
+def render_cluster_status_tab(cluster_status,system_metrics):
     """Renderiza la pestaña de estado detallado del cluster"""
     st.header("Estado Detallado del Cluster")
+    col1, col2, col3, col4, col5 = st.columns(5)
     
+    with col1:
+        st.metric(
+            label="Nodos Vivos",
+            value=cluster_status['alive_node_count'],
+            delta="Online" if cluster_status['alive_node_count'] > 0 else "Ninguno"
+        )
+    
+    with col2:
+        dead_count = cluster_status['dead_node_count']
+        delta_color = "inverse" if dead_count > 0 else "normal"
+        st.metric(
+            label="Nodos Muertos",
+            value=dead_count,
+            delta="⚠️ Atención" if dead_count > 0 else "✅ OK",
+            delta_color=delta_color
+        )
+    
+    with col3:
+        st.metric(
+            label="CPUs Totales",
+            value=f"{cluster_status['total_cpus']:.0f}",
+            delta=f"{system_metrics.get('cpu_percent', 0):.1f}% uso" if system_metrics else "N/A"
+        )
+    
+    with col4:
+        memory_gb = cluster_status['total_memory'] / (1024**3) if cluster_status['total_memory'] else 0
+        st.metric(
+            label="Memoria Total",
+            value=f"{memory_gb:.1f} GB",
+            delta=f"{system_metrics.get('memory_percent', 0):.1f}% uso" if system_metrics else "N/A"
+        )
+    
+    with col5:
+        st.metric(
+            label="GPUs",
+            value=cluster_status['total_gpus'],
+            delta="Disponibles" if cluster_status['total_gpus'] > 0 else "No disponibles"
+        )
+    
+    if cluster_status['connected']:
+        if cluster_status['dead_node_count'] > 0:
+            st.error(
+                f"⚠️ **ATENCIÓN**: {cluster_status['dead_node_count']} nodo(s) están muertos. "
+                f"Solo {cluster_status['alive_node_count']} de {cluster_status['node_count']} nodos están operativos."
+            )
+        else:
+            st.success(f"✅ Todos los {cluster_status['alive_node_count']} nodos están operativos")
+        
+        plot_cluster_metrics(cluster_status)
     if cluster_status['connected']:        # Sección para gestión de nodos (añadir/eliminar)
         st.subheader("� Gestión de Nodos del Cluster")
         

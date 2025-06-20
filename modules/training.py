@@ -605,9 +605,7 @@ def run_distributed_training_advanced(dataset_name, selected_models, hyperparame
         
         @ray.remote(num_cpus=1)
         def train_model_with_tracking(model, model_name, X, y, fold_idx, total_folds):
-            """Función remota para entrenar un modelo y rastrear su progreso"""
-            
-            
+            """Función remota para entrenar un modelo y rastrear su progreso"""      
             try:
 
                 X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=fold_idx)
@@ -679,22 +677,16 @@ def run_distributed_training_advanced(dataset_name, selected_models, hyperparame
 
                 node_idx = i % len(alive_nodes)
                 node_id = alive_nodes[node_idx]['NodeID']
-
                 training_history[model_name]['node_assignment'] = node_id
-
-                task = train_model_with_tracking.options(num_cpus=1).remote(model, model_name, X, y, 0, 1)
-                
-                tasks.append(task)
-                task_mapping[task] = (model_name, 0)  
-                
-                status_text.text(f"🚀 Distribuyendo tarea: modelo {model_name} → nodo {node_id[:8]}")
+                status_text.text(f"🚀 Distribuyendo tarea: modelo {model_name} → nodo {node_id}")
                 time.sleep(0.1)  
         else:
 
             for model_name, model in models_to_train.items():
-                task = train_model_with_tracking.remote(model, model_name, X, y, 0, 1)
+                task = train_model_with_tracking.options(num_cpus=1).remote(model, model_name, X, y, 0, 1)
+                
                 tasks.append(task)
-                task_mapping[task] = (model_name, 0)
+                task_mapping[task] = (model_name, 0)  
 
         while tasks:
 

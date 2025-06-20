@@ -9,17 +9,11 @@ from datetime import datetime
 from modules.utils import initialize_session_state, load_custom_styles, get_unique_key
 from modules.cluster import get_cluster_status, get_system_metrics, render_cluster_status_tab
 from modules.views import (
-    render_overview_tab,
     render_training_tab,
     render_results_tab, 
     render_system_metrics_tab,
 )
-from modules.training import (
-    load_training_results,
-    run_distributed_training,
-    run_sequential_training,
-    get_fault_tolerance_stats
-)
+
 
 
 st.set_page_config(
@@ -48,7 +42,6 @@ st.markdown("""
 
 
 tab_titles = [
-    "📊 Vista General",
     "🔍 Estado del Cluster",
     "🧠 Entrenamiento ML",
     "📈 Resultados",
@@ -100,18 +93,15 @@ with st.sidebar:
 
 
 with tabs[0]:
-    render_overview_tab(cluster_status, system_metrics)
+    render_cluster_status_tab(cluster_status,system_metrics)
 
 with tabs[1]:
-    render_cluster_status_tab(cluster_status)
-
-with tabs[2]:
     render_training_tab(cluster_status)
 
-with tabs[3]:
+with tabs[2]:
     render_results_tab()
 
-with tabs[4]:
+with tabs[3]:
     render_system_metrics_tab(system_metrics)
 
 if st.session_state.auto_refresh:
