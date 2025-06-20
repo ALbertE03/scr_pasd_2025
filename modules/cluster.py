@@ -301,16 +301,15 @@ def render_cluster_status_tab(cluster_status,system_metrics):
         tab1, tab2 = st.tabs(["📌 Añadir Nodo", "🗑️ Eliminar Nodo"])
         
         with tab1:
-            with st.expander("ℹ️ Información sobre añadir nodos", expanded=False):
-                st.info("""
-                **Añadir un nuevo nodo** expande la capacidad de procesamiento del cluster Ray.
-                
-                - Cada nodo añade 2 CPUs adicionales al cluster
-                - Los nodos se ejecutan como contenedores Docker
-                - Los nodos se conectan automáticamente al nodo principal (ray-head)
-                - Un nombre único facilita la identificación del nodo en el dashboard
-                """)
             
+            add_cpu = st.slider(
+                "Cantidad de CPUs para el nuevo nodo",
+                min_value=1,
+                max_value=2,
+                value=2,
+                step=1,
+                help="Cantidad de CPUs que tendrá el nuevo nodo"
+            )   
             with st.form("add_node_form"):
                 col1, col2 = st.columns([3, 1])
                 with col1:
@@ -326,7 +325,7 @@ def render_cluster_status_tab(cluster_status,system_metrics):
                                                     type="primary")
             if add_node_btn and worker_name:
                 with st.spinner(f"Añadiendo nuevo nodo '{worker_name}' al cluster..."):
-                    success = add_external_worker(worker_name)
+                    success = add_external_worker(worker_name,add_cpu)
                     
                     if success:
                         st.info("Puede tardar unos segundos en reflejarse en el dashboard del cluster.")
@@ -336,15 +335,6 @@ def render_cluster_status_tab(cluster_status,system_metrics):
                 st.warning("Por favor ingresa un nombre para el nodo")
         
         with tab2:            
-            with st.expander("ℹ️ Información sobre eliminar nodos", expanded=False):
-                st.info("""
-                **Eliminar un nodo** desconecta y elimina el contenedor Docker del nodo.
-                - El nodo dejará de estar disponible para el cluster
-                - La eliminación es permanente
-                - ⚠️ No se puede eliminar el nodo principal 
-
-                """)
-            
             ray_nodes = get_all_ray_nodes()
             
             if not ray_nodes:
@@ -379,17 +369,6 @@ def render_cluster_status_tab(cluster_status,system_metrics):
                                 st.rerun()
         
         st.divider()
-        st.subheader("Estado de los Nodos del Cluster")
-        
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Total Nodos", cluster_status['node_count'])
-        with col2:
-            st.metric("Nodos Vivos", cluster_status['alive_node_count'], 
-                     delta="✅ Operativos")
-        with col3:
-            st.metric("Nodos Muertos", cluster_status['dead_node_count'],
-                     delta="⚠️ Fuera de línea" if cluster_status['dead_node_count'] > 0 else "✅ Ninguno")
         
         st.subheader("📊 Distribución de Recursos por Nodo")
 
@@ -470,7 +449,7 @@ def render_cluster_status_tab(cluster_status,system_metrics):
         st.info("Por favor verifica que el cluster Ray esté en ejecución y sea accesible desde esta máquina.")
 
 
-def add_external_worker(worker_name):
+def add_external_worker(worker_name,add_cpu):
     """Añade un worker externo usando docker directamente"""
     try:
         in_docker = os.path.exists('/.dockerenv')
@@ -496,7 +475,7 @@ def add_external_worker(worker_name):
                     echo 'Esperando al cluster principal...' && \
                     sleep 10 && \
                     echo 'Conectando al cluster existente...' && \
-                    ray start --address=ray-head:6379 --num-cpus=2 --object-manager-port=8076 \
+                    ray start --address=ray-head:6379 --num-cpus={add_cpu} --object-manager-port=8076 \
                     --node-manager-port=8077 --min-worker-port=10002 --max-worker-port=19999 && \
                     echo 'Worker externo conectado exitosamente!' && \
                     tail -f /dev/null"
