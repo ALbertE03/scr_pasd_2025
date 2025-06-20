@@ -43,7 +43,7 @@ def render_advanced_training(cluster_status):
     col1, col2 = st.columns([3, 2])
     
     with col1:
-        datasets = ['iris', 'wine', 'breast_cancer', 'digits', 'diabetes']
+        datasets = ['iris', 'wine', 'breast_cancer', 'digits']
         selected_dataset = st.selectbox(
             "Dataset",
             options=datasets,
