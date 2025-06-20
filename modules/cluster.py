@@ -104,25 +104,28 @@ def plot_cluster_metrics(cluster_status):
     col1, col2, col3 = st.columns(3)
     
     with col1:
+        total_cpus = cluster_status['total_cpus']
+        
+        max_cpu = max(total_cpus, 4)  
+
+        
         fig_cpu = go.Figure(go.Indicator(
-            mode="gauge+number+delta",
-            value=cluster_status['total_cpus'],
+            mode="gauge+number",
+            value=total_cpus,
             domain={'x': [0, 1], 'y': [0, 1]},
             title={'text': "CPUs Totales", 'font': {'size': 24, 'color': '#4361ee'}},
             gauge={
-                'axis': {'range': [None, 20], 'tickwidth': 1},
+                'axis': {'range': [0, max_cpu], 'tickwidth': 1},
                 'bar': {'color': "#4361ee"},
                 'steps': [
-                    {'range': [0, 10], 'color': "rgba(67, 97, 238, 0.2)"},
-                    {'range': [10, 20], 'color': "rgba(67, 97, 238, 0.4)"}
+                    {'range': [0, max_cpu], 'color': "rgba(67, 97, 238, 0.2)"}
                 ],
                 'threshold': {
                     'line': {'color': "red", 'width': 4},
                     'thickness': 0.75, 
-                    'value': 16
+                    'value': total_cpus-0.75  
                 }
-            }
-        ))
+            }        ))
         fig_cpu.update_layout(
             height=300,
             margin=dict(l=20, r=20, t=30, b=20),
@@ -133,23 +136,25 @@ def plot_cluster_metrics(cluster_status):
     
     with col2:
         memory_gb = cluster_status['total_memory'] / (1024**3) if cluster_status['total_memory'] else 0
+        
+        max_mem = max(memory_gb, 4) 
+        
         fig_mem = go.Figure(go.Indicator(
-            mode="gauge+number+delta",
+            mode="gauge+number",
             value=memory_gb,
             domain={'x': [0, 1], 'y': [0, 1]},
             title={'text': "Memoria Total (GB)", 'font': {'size': 24, 'color': '#38b000'}},
-            number={'suffix': " GB"},
+            number={'suffix': " GB", 'valueformat': '.1f'},
             gauge={
-                'axis': {'range': [None, 32], 'tickwidth': 1},
+                'axis': {'range': [0, max_mem], 'tickwidth': 1},
                 'bar': {'color': "#38b000"},
                 'steps': [
-                    {'range': [0, 16], 'color': "rgba(56, 176, 0, 0.2)"},
-                    {'range': [16, 32], 'color': "rgba(56, 176, 0, 0.4)"}
+                    {'range': [0, max_mem], 'color': "rgba(56, 176, 0, 0.2)"}
                 ],
                 'threshold': {
                     'line': {'color': "red", 'width': 4},
-                    'thickness': 0.75, 
-                    'value': 24
+                    'thickness': 0.75,
+                    'value': memory_gb-0.75 
                 }
             }
         ))
@@ -162,17 +167,64 @@ def plot_cluster_metrics(cluster_status):
         st.plotly_chart(fig_mem, use_container_width=True, key="cluster_memory_gauge")
     
     with col3:
-        fig_nodes = go.Figure(data=[
-            go.Bar(
-                x=['Vivos', 'Muertos'],
-                y=[cluster_status['alive_node_count'], cluster_status['dead_node_count']],
-                marker_color=['#38b000', '#ff0054'],
-                text=[cluster_status['alive_node_count'], cluster_status['dead_node_count']],
-                textposition='auto',
-                hoverinfo='y+text',
-                width=[0.4, 0.4]
+        total_nodes = cluster_status['node_count']
+        alive_count = cluster_status['alive_node_count']
+        dead_count = cluster_status['dead_node_count']
+        
+        if total_nodes > 0:
+            alive_percent = (alive_count / total_nodes) * 100
+            dead_percent = (dead_count / total_nodes) * 100
+        else:
+            alive_percent = 0
+            dead_percent = 0
+            
+        node_text = [
+            f"{alive_count} ({alive_percent:.1f}%)",
+            f"{dead_count} ({dead_percent:.1f}%)"
+        ]
+        
+        fig_nodes = go.Figure()
+
+        fig_nodes.add_trace(go.Bar(
+            x=['Vivos', 'Muertos'],
+            y=[alive_count, dead_count],
+            marker_color=['#38b000', '#ff0054'],
+            text=node_text,
+            textposition='auto',
+            hoverinfo='y+text',
+            width=[0.4, 0.4],
+            hovertemplate='%{x}: %{y} nodos<br>%{text}<extra></extra>'
+        ))
+        
+        if dead_count > 0:
+            fig_nodes.add_shape(
+                type="line",
+                x0=0.7,  
+                y0=dead_count,
+                x1=1.3, 
+                y1=dead_count,
+                line=dict(
+                    color="Red",
+                    width=3,
+                    dash="solid",
+                ),
+                name="Nodos muertos"
             )
-        ])
+            
+            # Añadir anotación explicativa
+            fig_nodes.add_annotation(
+                x=1.3,
+                y=dead_count,
+                text=f"Nodos muertos: {dead_count}",
+                showarrow=True,
+                arrowhead=1,
+                ax=40,
+                ay=-20,
+                font=dict(
+                    color="red",
+                    size=10
+                )
+            )
         fig_nodes.update_layout(
             title={
                 'text': "Estado de Nodos",
@@ -223,8 +275,7 @@ def render_cluster_status_tab(cluster_status,system_metrics):
         memory_gb = cluster_status['total_memory'] / (1024**3) if cluster_status['total_memory'] else 0
         st.metric(
             label="Memoria Total",
-            value=f"{memory_gb:.1f} GB",
-            delta=f"{system_metrics.get('memory_percent', 0):.1f}% uso" if system_metrics else "N/A"
+            value=f"{memory_gb:.1f} GB"
         )
     
     with col5:

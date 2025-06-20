@@ -58,7 +58,7 @@ with st.sidebar:
     st.title("⚙️ Configuración")
     
     auto_refresh = st.toggle(
-        "Auto-Refresh (30s)",
+        "Auto-Refresh (10s)",
         value=st.session_state.auto_refresh,
         key="auto_refresh_toggle"
     )
@@ -73,24 +73,7 @@ with st.sidebar:
     if st.button("🔄 Actualizar Ahora", key=get_unique_key("refresh_button")):
         st.experimental_rerun()
     
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("🖥️ Información del Cluster")
     
-    if cluster_status['connected']:
-        st.sidebar.success("✅ Conectado al cluster Ray")
-        st.sidebar.metric(
-            label="Nodos Activos",
-            value=cluster_status['alive_node_count']
-        )
-    else:
-        st.sidebar.error(f"❌ Cluster no conectado: {cluster_status.get('error', 'Error desconocido')}")
-    
-    st.sidebar.markdown("---")
-    st.sidebar.caption(f"Última actualización: {datetime.now().strftime('%H:%M:%S')}")
-    
-    st.sidebar.markdown("---")
-    st.sidebar.caption("v2.0 - Junio 2025")
-
 
 with tabs[0]:
     render_cluster_status_tab(cluster_status,system_metrics)

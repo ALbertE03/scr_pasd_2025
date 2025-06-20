@@ -5,7 +5,7 @@ import time
 import logging
 import os
 from datetime import datetime, timedelta
-# Configure logging
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -589,8 +589,4 @@ def get_metrics_for_timeframe(hours=12):
     }
 
 def start_metrics_collection():
-    """Inicia la recolección automática de métricas del sistema"""
-    # Esta función puede ser llamada desde un background task
-    # Para simplificar, por ahora solo retorna True
-    # En un sistema real, esto podría iniciar un thread separado
     return True
