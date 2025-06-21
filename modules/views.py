@@ -4,10 +4,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 from .cluster import  get_system_metrics
 from .training import (
-    plot_model_comparison, 
-    run_distributed_training_advanced,
-    plot_training_metrics,
-
+    plot_model_comparison,
+    run_distributed_training_advanced
 )
 from .utils import save_system_metrics_history, get_metrics_for_timeframe
 
@@ -276,9 +274,6 @@ def render_advanced_training(cluster_status):
 def render_system_metrics_tab(system_metrics):
     """Renderiza la pestaña de métricas del sistema"""
     st.header("Métricas del Sistema")
-    
-    # Inicializar recolección de métricas si es la primera vez
-    initialize_metrics_collection()
     
     # Botón para refrescar métricas
     col_refresh1, col_refresh2, col_refresh3 = st.columns([1, 1, 1])
@@ -654,31 +649,4 @@ def plot_training_metrics(training_history, chart_prefix=""):
         
         st.plotly_chart(fig_loss, use_container_width=True, key=f"{chart_prefix}_loss_plot")
 
-def initialize_metrics_collection():
-    """Inicializa la recolección de métricas del sistema si no existe historial"""
-    try:
-        historical_data = get_metrics_for_timeframe(hours=1)
-        
-        # Si no hay datos históricos, generar una entrada inicial
-        if not historical_data['timestamps']:
-            current_metrics = get_system_metrics()
-            if current_metrics:
-                save_system_metrics_history(current_metrics)
-                st.success("🔄 Sistema de métricas inicializado")
-        
-        return True
-    except Exception as e:
-        st.warning(f"No se pudo inicializar el sistema de métricas: {e}")
-        return False
 
-def auto_update_metrics():
-    """Actualiza automáticamente las métricas del sistema"""
-    try:
-        current_metrics = get_system_metrics()
-        if current_metrics:
-            save_system_metrics_history(current_metrics)
-            return current_metrics
-        return {}
-    except Exception as e:
-        st.error(f"Error actualizando métricas: {e}")
-        return {}

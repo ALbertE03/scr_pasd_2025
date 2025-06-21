@@ -107,125 +107,7 @@ def plot_model_comparison(results_data, chart_prefix="default"):
     )
     st.plotly_chart(fig2, use_container_width=True, key=f"{chart_prefix}_model_comparison_accuracy_scatter")
 
-def run_distributed_training(dataset_name, selected_models, enable_fault_tolerance=True):
-    """Ejecuta entrenamiento distribuido con tolerancia a fallos y guarda TODOS los modelos"""
-    try:
-        trainer = DistributedMLTrainer(enable_fault_tolerance=enable_fault_tolerance)
-        
-        # Ejecutar entrenamiento
-        results = trainer.train_models_distributed(
-            dataset_name=dataset_name,
-            selected_models=selected_models
-        )
 
-        # Guardar resultados y TODOS los modelos entrenados
-        if results:
-            trainer.save_results(f"results_{dataset_name}.json")
-            trainer.save_models(f"models_{dataset_name}")
-            
-            # Crear estructura de directorio consistente para la API
-            api_models_dir = os.path.join("models", dataset_name)
-            os.makedirs(api_models_dir, exist_ok=True)
-            
-            # Copiar modelos al directorio de la API con estructura consistente
-            source_dir = f"models_{dataset_name}"
-            if os.path.exists(source_dir):
-                import shutil
-                for model_file in os.listdir(source_dir):
-                    if model_file.endswith('.pkl'):
-                        source_path = os.path.join(source_dir, model_file)
-                        dest_path = os.path.join(api_models_dir, model_file)
-                        shutil.copy2(source_path, dest_path)
-                        st.success(f"✅ Modelo {model_file} copiado para API")
-        
-        fault_stats = trainer.get_fault_tolerance_stats()
-        if fault_stats and fault_stats.get('failed_tasks', 0) > 0:
-            st.warning(f"⚠️ {fault_stats['failed_tasks']} tarea(s) fallaron pero el entrenamiento continuó")
-            
-            if 'fault_logs' in st.session_state:
-                st.session_state.fault_logs.append({
-                    "time": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                    "event": f"Entrenamiento completado con {fault_stats['failed_tasks']} fallos",
-                    "type": "warning"
-                })
-        else:
-            if 'fault_logs' in st.session_state:
-                st.session_state.fault_logs.append({
-                    "time": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                    "event": f"Entrenamiento exitoso en {dataset_name}",
-                    "type": "success"
-                })
-        
-        return results
-        
-    except Exception as e:
-        if 'fault_logs' in st.session_state:
-            st.session_state.fault_logs.append({
-                "time": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                "event": f"Error en entrenamiento: {str(e)[:50]}...",
-                "type": "error"
-            })
-        st.error(f"Error durante el entrenamiento: {e}")
-        return None
-
-def run_sequential_training(datasets_list, selected_models):
-    """Ejecuta entrenamiento secuencial de múltiples datasets y guarda TODOS los modelos"""
-    try:
-        trainer = DistributedMLTrainer(enable_fault_tolerance=True)
-
-        all_results, execution_summary = trainer.train_multiple_datasets_sequential(
-            datasets_list=datasets_list,
-            selected_models=selected_models
-        )
-
-        # Crear estructura de directorio para API y copiar todos los modelos
-        if all_results:
-            import shutil
-            for dataset_name in datasets_list:
-                if dataset_name in all_results:
-                    # Crear directorio para la API
-                    api_models_dir = os.path.join("models", dataset_name)
-                    os.makedirs(api_models_dir, exist_ok=True)
-                    
-                    # Copiar modelos al directorio de la API
-                    source_dir = f"models_{dataset_name}"
-                    if os.path.exists(source_dir):
-                        for model_file in os.listdir(source_dir):
-                            if model_file.endswith('.pkl'):
-                                source_path = os.path.join(source_dir, model_file)
-                                dest_path = os.path.join(api_models_dir, model_file)
-                                shutil.copy2(source_path, dest_path)
-                                st.success(f"✅ Modelo {model_file} ({dataset_name}) copiado para API")
-
-        if 'fault_logs' in st.session_state:
-            st.session_state.fault_logs.append({
-                "time": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                "event": f"Entrenamiento secuencial completado: {execution_summary.get('successful_datasets', 0)}/{execution_summary.get('total_datasets', 0)} datasets",
-                "type": "info"
-            })
-        
-        return all_results, execution_summary
-        
-    except Exception as e:
-
-        if 'fault_logs' in st.session_state:
-            st.session_state.fault_logs.append({
-                "time": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                "event": f"Error en entrenamiento secuencial: {str(e)[:50]}...",
-                "type": "error"
-            })
-        st.error(f"Error durante el entrenamiento secuencial: {e}")
-        return None, None
-
-def load_execution_summary():
-    """Carga el resumen de ejecución secuencial"""
-    try:
-        if os.path.exists("execution_summary.json"):
-            with open("execution_summary.json", 'r') as f:
-                return json.load(f)
-    except Exception as e:
-        st.warning(f"Error cargando resumen de ejecución: {e}")
-    return None
 
 def plot_cross_dataset_comparison(all_results):
     """Crea gráfico de comparación entre datasets"""
@@ -301,220 +183,6 @@ def plot_cross_dataset_comparison(all_results):
     fig2.update_traces(textposition='outside')
     st.plotly_chart(fig2, use_container_width=True, key="cross_dataset_best_models")
 
-def get_fault_tolerance_stats():
-    """Obtiene estadísticas de tolerancia a fallos del trainer"""
-    try:
-        trainer = DistributedMLTrainer()
-        return trainer.get_fault_tolerance_stats()
-    except Exception as e:
-        st.error(f"Error obteniendo estadísticas de tolerancia a fallos: {e}")
-        return {}
-
-def plot_training_metrics(training_history, chart_prefix=""):
-    """Visualiza métricas de rendimiento de los modelos"""
-    if not training_history or not isinstance(training_history, dict):
-        st.warning("No hay datos de historial de entrenamiento disponibles")
-        return
-
-    st.header("📊 Métricas de Entrenamiento")
-
-    st.info(f"Procesando {len(training_history)} modelos para visualización")
-
-    st.write("🔍 Modelos en el historial:")
-    for idx, model_name in enumerate(training_history.keys()):
-        st.write(f"  {idx+1}. {model_name}")
-
-    st.markdown("---")
-
-    metrics_data = []
-    missing_models = []
-    processed_models = []
-    
-    for model_name, history in training_history.items():
-        if not history:
-            st.warning(f"⚠️ Historia vacía para {model_name}")
-            missing_models.append(model_name)
-            continue
-            
-        if not isinstance(history, dict):
-            st.warning(f"⚠️ Historia con formato inválido para {model_name}: {type(history)}")
-            missing_models.append(model_name)
-            continue
-
-        fields_status = {
-            'accuracy': 'accuracy' in history and history['accuracy'] is not None,
-            'val_accuracy': 'val_accuracy' in history and history['val_accuracy'] is not None,
-            'loss': 'loss' in history and history['loss'] is not None,
-            'val_loss': 'val_loss' in history and history['val_loss'] is not None
-        }
-
-        if not fields_status['accuracy']:
-            st.warning(f"⚠️ No hay métricas de accuracy para {model_name}")
-            missing_models.append(model_name)
-            continue
-
-        accuracy = float(history.get('accuracy', 0))
-        val_accuracy = float(history.get('val_accuracy', accuracy))  
-        loss = float(history.get('loss', 0))
-        val_loss = float(history.get('val_loss', loss))  
-            
-        entry = {
-            'Model': model_name,
-            'Accuracy': accuracy,
-            'Val_Accuracy': val_accuracy,
-            'Loss': loss,
-            'Val_Loss': val_loss
-        }
-
-        if entry['Accuracy'] > 1:
-            entry['Accuracy'] = min(1.0, entry['Accuracy'] / 100)
-        if entry['Val_Accuracy'] > 1:
-            entry['Val_Accuracy'] = min(1.0, entry['Val_Accuracy'] / 100)
-            
-        metrics_data.append(entry)
-        processed_models.append(model_name)
-        st.success(f"✅ Añadido modelo {model_name} a la visualización")
-    
-
-    if missing_models:
-        st.error(f"⚠️ Los siguientes modelos no pudieron ser incluidos: {', '.join(missing_models)}")
-    
-    if not metrics_data:
-        st.warning("⛔ No hay suficientes datos válidos para visualizar")
-        return
-
-    df = pd.DataFrame(metrics_data)
-
-    with st.expander("Diagnóstico de datos para visualización", expanded=True):
-        st.write("Columnas disponibles:", df.columns.tolist())
-        st.write(f"Número de modelos procesados: {len(processed_models)}")
-        st.write(f"Número de filas en DataFrame: {len(df)}")
-        st.write("Modelos incluidos en el DataFrame:", df['Model'].unique().tolist())
-        
-        if len(df) != len(processed_models):
-            st.error(f"⚠️ Inconsistencia: {len(processed_models)} modelos procesados, pero {len(df)} en el DataFrame")
-        
-        st.subheader("Datos completos para graficar:")
-        st.dataframe(df)
-
-        st.subheader("Estado detallado por modelo")
-        for model_name in training_history:
-            st.write(f"Modelo: {model_name}")
-            if model_name in df['Model'].values:
-                st.success(f"✓ Incluido en la visualización")
-                model_idx = df.index[df['Model'] == model_name].tolist()
-                st.write(f"   Índice(s) en DataFrame: {model_idx}")
-            else:
-                st.error(f"✗ No incluido en la visualización")
-                st.write(f"   Datos disponibles: {training_history[model_name]}")
-    
-
-    col1, col2 = st.columns(2)
-
-    num_models = len(df)
-    base_height = 400
-    height_per_model = 30 
-    chart_height = max(base_height, min(1200, base_height + (num_models - 6) * height_per_model))
-
-    st.write(f"Número de modelos: {num_models}, altura del gráfico: {chart_height}px")
-    
-    with col1:
-
-        if num_models > 10:
-            fig_accuracy = px.bar(
-                df,
-                y="Model",  
-                x=["Accuracy", "Val_Accuracy"],  
-                title="Comparación de Precisión entre Modelos",
-                labels={"value": "Precisión", "variable": "Tipo"},
-                barmode="group",
-                orientation='h', 
-                color_discrete_sequence=px.colors.qualitative.Bold
-            )
-            
-            fig_accuracy.update_layout(
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                xaxis=dict(title="Precisión", tickformat=".0%", range=[0, 1]),
-                yaxis=dict(title="Modelo", categoryorder='total ascending'),  
-                plot_bgcolor="rgba(0,0,0,0)",
-                xaxis_gridcolor="rgba(0,0,0,0.1)",
-                yaxis_gridcolor="rgba(0,0,0,0.1)",
-                height=chart_height,
-                margin=dict(l=120, r=20, t=60, b=40)  
-            )
-        else:
-            fig_accuracy = px.bar(
-                df,
-                x="Model",
-                y=["Accuracy", "Val_Accuracy"],
-                title="Comparación de Precisión entre Modelos",
-                labels={"value": "Precisión", "variable": "Tipo"},
-                barmode="group",
-                color_discrete_sequence=px.colors.qualitative.Bold
-            )
-            
-            fig_accuracy.update_layout(
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                xaxis=dict(title="Modelo"),
-                yaxis=dict(title="Precisión", tickformat=".0%", range=[0, 1]),
-                plot_bgcolor="rgba(0,0,0,0)",
-                xaxis_gridcolor="rgba(0,0,0,0.1)",
-                yaxis_gridcolor="rgba(0,0,0,0.1)",
-                height=chart_height,
-                margin=dict(l=20, r=20, t=60, b=40)
-            )
-        
-        st.plotly_chart(fig_accuracy, use_container_width=True, key=f"{chart_prefix}_accuracy_plot")
-    
-    with col2:
-
-        loss_max = df[["Loss", "Val_Loss"]].values.max() * 1.2 if len(df) > 0 else 2.0
-
-        if num_models > 10:
-            fig_loss = px.bar(
-                df,
-                y="Model",  
-                x=["Loss", "Val_Loss"],  
-                title="Comparación de Pérdida entre Modelos",
-                labels={"value": "Pérdida", "variable": "Tipo"},
-                barmode="group",
-                orientation='h',  
-                color_discrete_sequence=px.colors.qualitative.Bold
-            )
-            
-            fig_loss.update_layout(
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                xaxis=dict(title="Pérdida", range=[0, loss_max]),
-                yaxis=dict(title="Modelo", categoryorder='total ascending'),  
-                plot_bgcolor="rgba(0,0,0,0)",
-                xaxis_gridcolor="rgba(0,0,0,0.1)",
-                yaxis_gridcolor="rgba(0,0,0,0.1)",
-                height=chart_height,
-                margin=dict(l=120, r=20, t=60, b=40) 
-            )
-        else:
-            fig_loss = px.bar(
-                df,
-                x="Model",
-                y=["Loss", "Val_Loss"],
-                title="Comparación de Pérdida entre Modelos",
-                labels={"value": "Pérdida", "variable": "Tipo"},
-                barmode="group",
-                color_discrete_sequence=px.colors.qualitative.Bold
-            )
-            
-            fig_loss.update_layout(
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                xaxis=dict(title="Modelo"),
-                yaxis=dict(title="Pérdida", range=[0, loss_max]),
-                plot_bgcolor="rgba(0,0,0,0)",
-                xaxis_gridcolor="rgba(0,0,0,0.1)",
-                yaxis_gridcolor="rgba(0,0,0,0.1)",
-                height=chart_height,
-                margin=dict(l=20, r=20, t=60, b=40)
-            )
-        
-        st.plotly_chart(fig_loss, use_container_width=True, key=f"{chart_prefix}_loss_plot")
 
 def run_distributed_training_advanced(dataset_name, selected_models, hyperparameters=None, enable_fault_tolerance=True, progress_callback=None):
     """
@@ -611,7 +279,8 @@ def run_distributed_training_advanced(dataset_name, selected_models, hyperparame
             return None, None
             
         dataset = datasets[dataset_name]
-        X, y = dataset.data, dataset.target
+        d = ray.get(dataset)
+        X, y = d.data, d.target
 
         available_models = trainer.get_available_models()
         models_to_train = {}
@@ -636,7 +305,7 @@ def run_distributed_training_advanced(dataset_name, selected_models, hyperparame
                 "node_assignment": None
             }
         
-        @ray.remote(num_cpus=1)
+        @ray.remote(num_cpus=1,max_retries=3, retry_exceptions=True)
         def train_model_with_tracking(model, model_name, X, y, fold_idx, total_folds):
             """Función remota para entrenar un modelo y rastrear su progreso"""      
             try:
@@ -711,7 +380,7 @@ def run_distributed_training_advanced(dataset_name, selected_models, hyperparame
                 node_idx = i % len(alive_nodes)
                 node_id = alive_nodes[node_idx]['NodeID']
                 training_history[model_name]['node_assignment'] = node_id
-                task = train_model_with_tracking.options(num_cpus=1).remote(model, model_name, X, y, 0, 1)
+                task = train_model_with_tracking.options(num_cpus=1,max_retries=3, retry_exceptions=True).remote(model, model_name, X, y, 0, 1)
                 
                 tasks.append(task)
                 task_mapping[task] = (model_name, 0)  
@@ -823,11 +492,10 @@ def run_distributed_training_advanced(dataset_name, selected_models, hyperparame
             
             models_directory = os.path.join("training_results", f"models_{dataset_name}")
             os.makedirs(models_directory, exist_ok=True)
-              # Guardar TODOS los modelos entrenados exitosamente
             saved_models = {}
             for model_name in results.keys():
                 try:
-                    # Buscar el primer modelo exitoso (ya no necesitamos el "mejor")
+                    
                     model_saved = False
                     for task in [t for t in completed_task_results if t['model_name'] == model_name]:
                         if task.get('status') == 'success' and 'model' in task:
@@ -871,7 +539,8 @@ def run_distributed_training_advanced(dataset_name, selected_models, hyperparame
             Puede cargar estos modelos para inferencia o análisis posterior utilizando la pestaña de modelos.
             """)
 
-        return results, training_history
+        
+            return results, training_history
         
     except Exception as e:
         if progress_bar:
@@ -929,165 +598,4 @@ def get_trained_models_list(dataset_name):
         st.warning(f"Error al listar modelos entrenados: {str(e)}")
         return []
 
-def plot_inference_metrics(inference_data, chart_prefix=""):
-    """Visualiza métricas de inferencia de los modelos entrenados"""
-    if not inference_data or not isinstance(inference_data, dict):
-        st.warning("No hay datos de inferencia disponibles")
-        return
-    st.markdown("---")
-    
 
-    st.write(f"📊 Procesando {len(inference_data)} modelos para visualización de inferencia")
-
-    metrics_data = []
-    missing_models = []
-    
-    for model_name, results in inference_data.items():
-        if not results or not isinstance(results, dict):
-            st.warning(f"⚠️ Resultados inválidos para el modelo {model_name}")
-            missing_models.append(model_name)
-            continue
-        
-        metrics = {
-            'Model': model_name,
-            'Accuracy': float(results.get('accuracy', 0)),
-            'Precision': float(results.get('precision', results.get('accuracy', 0))),
-            'Recall': float(results.get('recall', results.get('accuracy', 0))),
-            'F1': float(results.get('f1', results.get('accuracy', 0))),
-            'Inference_Time': float(results.get('inference_time', 0))
-        }
-        
-        for key in ['Accuracy', 'Precision', 'Recall', 'F1']:
-            if metrics[key] > 1:
-                metrics[key] = min(1.0, metrics[key] / 100)
-                
-        metrics_data.append(metrics)
-        st.write(f"✅ Añadido {model_name} a la visualización de inferencia")
-    
-    if missing_models:
-        st.error(f"⚠️ Los siguientes modelos no pudieron ser incluidos en la visualización de inferencia: {', '.join(missing_models)}")
-    
-    if not metrics_data:
-        st.warning("No hay suficientes datos de inferencia para visualizar")
-        return
-    
-    df = pd.DataFrame(metrics_data)
-    
-    with st.expander("Información del DataFrame de inferencia", expanded=True):
-        st.write("Columnas disponibles:", df.columns.tolist())
-        st.write("Número de filas:", len(df))
-        st.write("Valores únicos en 'Model':", df['Model'].unique().tolist())
-        st.write("Datos completos:")
-        st.write(df)
-        
-        st.subheader("Estado detallado por modelo (inferencia)")
-        for model_name in inference_data:
-            st.write(f"Modelo: {model_name}")
-            if model_name in df['Model'].values:
-                st.success("✓ Incluido en la visualización")
-            else:
-                st.error("✗ No incluido en la visualización")
-                st.write("Datos disponibles:", inference_data[model_name])
-    num_models = len(df)
-    base_height = 400
-    height_per_model = 30 
-    chart_height = max(base_height, min(1200, base_height + (num_models - 6) * height_per_model))
-    
-    st.write(f"Número de modelos para inferencia: {num_models}, altura del gráfico: {chart_height}px")
-
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        if num_models > 10:
-            fig_metrics = px.bar(
-                df,
-                y="Model",  
-                x=["Accuracy", "Precision", "Recall", "F1"], 
-                title="Métricas de Rendimiento por Modelo",
-                labels={"value": "Valor", "variable": "Métrica"},
-                barmode="group",
-                orientation='h',  
-                color_discrete_sequence=px.colors.qualitative.Bold
-            )
-            
-            fig_metrics.update_layout(
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                xaxis=dict(title="Valor", tickformat=".0%", range=[0, 1]),
-                yaxis=dict(title="Modelo", categoryorder='total ascending'), 
-                plot_bgcolor="rgba(0,0,0,0)",
-                xaxis_gridcolor="rgba(0,0,0,0.1)",
-                yaxis_gridcolor="rgba(0,0,0,0.1)",
-                height=chart_height,
-                margin=dict(l=120, r=20, t=60, b=40)  
-            )
-        else:
-            fig_metrics = px.bar(
-                df,
-                x="Model",
-                y=["Accuracy", "Precision", "Recall", "F1"],
-                title="Métricas de Rendimiento por Modelo",
-                labels={"value": "Valor", "variable": "Métrica"},
-                barmode="group",
-                color_discrete_sequence=px.colors.qualitative.Bold
-            )
-            
-            fig_metrics.update_layout(
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                xaxis=dict(title="Modelo"),
-                yaxis=dict(title="Valor", tickformat=".0%", range=[0, 1]),
-                plot_bgcolor="rgba(0,0,0,0)",
-                xaxis_gridcolor="rgba(0,0,0,0.1)",
-                yaxis_gridcolor="rgba(0,0,0,0.1)",
-                height=chart_height,
-                margin=dict(l=20, r=20, t=60, b=40)
-            )
-        
-        st.plotly_chart(fig_metrics, use_container_width=True, key=f"{chart_prefix}_metrics_plot")
-    
-    with col2:
-
-        if 'Inference_Time' in df:
-            max_time = df["Inference_Time"].max() * 1.2 if len(df) > 0 else 100
-            if num_models > 10:
-                fig_time = px.bar(
-                    df,
-                    y="Model", 
-                    x="Inference_Time", 
-                    title="Tiempo de Inferencia por Modelo",
-                    labels={"Inference_Time": "Tiempo (ms)"},
-                    orientation='h',  
-                    color_discrete_sequence=px.colors.qualitative.Bold
-                )
-                
-                fig_time.update_layout(
-                    xaxis=dict(title="Tiempo (ms)", range=[0, max_time]),
-                    yaxis=dict(title="Modelo", categoryorder='total ascending'), 
-                    plot_bgcolor="rgba(0,0,0,0)",
-                    xaxis_gridcolor="rgba(0,0,0,0.1)",
-                    yaxis_gridcolor="rgba(0,0,0,0.1)",
-                    height=chart_height,
-                    margin=dict(l=120, r=20, t=60, b=40)  
-                )
-            else:
-                fig_time = px.bar(
-                    df,
-                    x="Model",
-                    y="Inference_Time",
-                    title="Tiempo de Inferencia por Modelo",
-                    labels={"Inference_Time": "Tiempo (ms)"},
-                    color_discrete_sequence=px.colors.qualitative.Bold
-                )
-                
-                fig_time.update_layout(
-                    xaxis=dict(title="Modelo"),
-                    yaxis=dict(title="Tiempo (ms)", range=[0, max_time]),
-                    plot_bgcolor="rgba(0,0,0,0)",
-                    xaxis_gridcolor="rgba(0,0,0,0.1)",
-                    yaxis_gridcolor="rgba(0,0,0,0.1)",
-                    height=chart_height,
-                    margin=dict(l=20, r=20, t=60, b=40)
-                )
-            
-            st.plotly_chart(fig_time, use_container_width=True, key=f"{chart_prefix}_time_plot")
-        else:
-            st.warning("No hay datos de tiempo de inferencia disponibles")

@@ -588,5 +588,4 @@ def get_metrics_for_timeframe(hours=12):
         'disk_values': disk_values
     }
 
-def start_metrics_collection():
-    return True
+

@@ -2,6 +2,7 @@ import requests
 import streamlit as st
 import pandas as pd
 import os
+import time
 from typing import Dict, List, Optional
 import plotly.express as px
 import plotly.graph_objects as go
@@ -78,20 +79,6 @@ class APIClient:
         except Exception as e:
             return {"status": "error", "error": str(e)}
     
-    def train_models(self, dataset_name: str, selected_models: Optional[List[str]] = None, test_size: float = 0.3) -> Dict:
-        """Inicia entrenamiento de modelos"""
-        try:
-            payload = {
-                "dataset_name": dataset_name,
-                "selected_models": selected_models,
-                "test_size": test_size
-            }
-            response = self.session.post(f"{self.base_url}/train", json=payload, timeout=30)
-            response.raise_for_status()
-            return {"status": "success", "data": response.json()}
-        except Exception as e:
-            return {"status": "error", "error": str(e)}
-    
     def get_cluster_status(self) -> Dict:
         """Obtiene el estado del cluster"""
         try:
@@ -119,22 +106,66 @@ class APIClient:
         except Exception as e:
             return {"status": "error", "error": str(e)}
     
-    def search_models(self, query: str) -> Dict:
+    def search_models(self, query: str) -> Dict:        
         """Busca modelos por query"""
         try:
             response = self.session.get(f"{self.base_url}/models/search/{query}", timeout=10)
             response.raise_for_status()
-            return {"status": "success", "data": response.json()}
+            return {"status": "success", "data": response.json()}        
         except Exception as e:
             return {"status": "error", "error": str(e)}
     
     def delete_model(self, model_name: str) -> Dict:
         """Elimina un modelo"""
-        try:            
-            response = self.session.delete(f"{self.base_url}/models/{model_name}", timeout=10)
-            response.raise_for_status()
-            return {"status": "success", "data": response.json()}
+        try:
+            print(f"Intentando eliminar modelo: {model_name}")
+            url = f"{self.base_url}/models/{model_name}"
+            print(f"URL de solicitud: {url}")
+            
+            max_retries = 3
+            retry_count = 0
+            success = False
+            
+            while retry_count < max_retries and not success:
+                try:
+                
+                    headers = {"Cache-Control": "no-cache", "Pragma": "no-cache"}
+                    response = self.session.delete(url, headers=headers, timeout=30)
+
+                    if response.status_code == 200:
+                        success = True
+                        print(f"Eliminación exitosa. Respuesta: {response.status_code}")
+                        try:
+                            result = response.json()
+                            print(f"Contenido de la respuesta: {result}")
+                            return {"status": "success", "data": result}
+                        except ValueError:
+                            print(f"Respuesta recibida (no JSON): {response.text}")
+                            return {
+                                "status": "success", 
+                                "data": {
+                                    "message": "Modelo eliminado exitosamente",
+                                    "response_text": response.text
+                                }
+                            }
+                    else:
+                        print(f"Error en respuesta: {response.status_code} - {response.text}")
+                        retry_count += 1
+                        time.sleep(1) 
+                        
+                except requests.exceptions.RequestException as req_e:
+                    print(f"Error de solicitud (intento {retry_count+1}): {str(req_e)}")
+                    retry_count += 1
+                    time.sleep(1)
+            
+            if not success:
+                return {"status": "error", "error": f"Error eliminando modelo después de {max_retries} intentos"}
+                
+        except requests.exceptions.RequestException as e:
+            print(f"Error de conexión: {str(e)}")
+            return {"status": "error", "error": f"Error de conexión: {str(e)}"}
         except Exception as e:
+            print(f"Error inesperado: {str(e)}")
             return {"status": "error", "error": str(e)}
     
     def predict_batch(self, model_name: str, file_data: bytes, filename: str, return_probabilities: bool = False) -> Dict:
@@ -196,14 +227,12 @@ def render_api_tab():
 
 def render_explore_models_tab(api_client: APIClient):
     """Renderiza la pestaña de exploración de modelos"""
-    st.subheader("🔍 Explorar Modelos Disponibles")
-    
+    st.subheader("🔍 Explorar Modelos Disponibles")    
     col1, col2 = st.columns([3, 1])
     
     with col2:
         if st.button("🔄 Actualizar", key="refresh_models_api"):
-            st.rerun()
-    
+            st.rerun()   
     models_response = api_client.get_models()
     
     if models_response["status"] == "error":
@@ -270,8 +299,21 @@ def render_explore_models_tab(api_client: APIClient):
                         st.metric("Tiempo Entrenamiento", f"{model_info.get('training_time', 0):.2f}s")
                         st.metric("Tamaño Archivo", f"{model_info.get('file_size_mb', 0):.2f} MB")
                     
-                    if st.button(f"📋 Detalles", key=f"details_{model_name}"):
-                        show_model_details(api_client, model_name)
+                    col_btn1, col_btn2 = st.columns(2)
+                    with col_btn1:
+                        if st.button(f"📋 Detalles", key=f"details_{model_name}"):
+                            show_model_details(api_client, model_name)
+                    
+                    with col_btn2:
+                        if st.button(f"🗑️ Eliminar", key=f"delete_{model_name}", type="secondary"):
+                            with st.spinner(f"Eliminando modelo {model_name}..."):
+                                
+                                response = api_client.delete_model(model_name)
+                                if response["status"] == "success":
+                                    st.success(f"✅ Modelo '{model_name}' eliminado correctamente")
+                                    st.rerun()  
+                                else:
+                                    st.error(f"❌ Error: {response.get('error', 'Error desconocido')}")
     else:
         st.info("No hay modelos que coincidan con los filtros seleccionados.")
 
@@ -761,4 +803,29 @@ def render_inference_stats_tab(api_client: APIClient):
     with col4:
         total_size = sum(model.get("file_size_mb", 0) for model in models.values())
         st.metric("Tamaño Total Modelos", f"{total_size:.1f} MB")
+
+
+def delete_model_confirm(api_client: APIClient, model_name: str):
+    """Elimina un modelo directamente"""
+    st.warning(f"¿Estás seguro de que deseas eliminar el modelo '{model_name}'?")
+    st.write("Esta acción no se puede deshacer.")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("✅ Sí, eliminar", key=f"yes_{model_name}", type="primary"):
+            with st.spinner(f"Eliminando modelo {model_name}..."):
+                
+                delete_response = api_client.delete_model(model_name)
+                
+                if delete_response["status"] == "success":
+                    st.success(f"✅ Modelo {model_name} eliminado correctamente")
+                    st.experimental_rerun()
+                else:
+                    st.error(f"❌ Error eliminando el modelo: {delete_response.get('error', 'Error desconocido')}")
+                    with st.expander("Detalles del error"):
+                        st.json(delete_response)
+    
+    with col2:
+        if st.button("❌ Cancelar", key=f"no_{model_name}"):
+            st.info("Eliminación cancelada")
 

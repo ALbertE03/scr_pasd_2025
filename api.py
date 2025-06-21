@@ -450,65 +450,6 @@ async def predict(request: PredictionRequest):
         raise HTTPException(status_code=500, detail=f"Error en predicción: {str(e)}")
 
 
-@app.post("/train", summary="Entrenar modelos")
-async def train_models(request: TrainingRequest, background_tasks: BackgroundTasks):
-    """Inicia el entrenamiento de modelos en el cluster distribuido"""
-    try:
-        trainer = get_trainer()
-
-        available_datasets = trainer.get_available_datasets()
-        if request.dataset_name not in available_datasets:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Dataset {request.dataset_name} no disponible. Opciones: {list(available_datasets.keys())}"
-            )
-
-        available_models = trainer.get_available_models()
-        if request.selected_models:
-            invalid_models = [m for m in request.selected_models if m not in available_models]
-            if invalid_models:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Modelos inválidos: {invalid_models}. Opciones: {list(available_models.keys())}"
-                )
-
-        def train_background():
-            try:
-                logger.info(f"Iniciando entrenamiento en background para dataset: {request.dataset_name}")
-                results = trainer.train_models_distributed(
-                    dataset_name=request.dataset_name,
-                    selected_models=request.selected_models,
-                    test_size=request.test_size
-                )
-                
-                if results:
-                    trainer.save_results(f"results_{request.dataset_name}.json")
-                    trainer.save_models(f"models_{request.dataset_name}")
-                    logger.info(f"Entrenamiento completado para dataset: {request.dataset_name}")
-                else:
-                    logger.error(f"Entrenamiento falló para dataset: {request.dataset_name}")
-                    
-            except Exception as e:
-                logger.error(f"Error en entrenamiento background: {e}")
-        
-        background_tasks.add_task(train_background)
-        
-        return {
-            "message": "Entrenamiento iniciado en background",
-            "dataset": request.dataset_name,
-            "models": request.selected_models or list(available_models.keys()),
-            "test_size": request.test_size,
-            "status": "training_started",
-            "timestamp": datetime.now().isoformat()
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error iniciando entrenamiento: {e}")
-        raise HTTPException(status_code=500, detail=f"Error iniciando entrenamiento: {str(e)}")
-
-
 @app.get("/cluster/status", response_model=ClusterInfo, summary="Estado del cluster Ray")
 async def cluster_status():
     """Obtiene información del estado del cluster Ray"""
@@ -588,15 +529,18 @@ async def list_algorithms():
         raise HTTPException(status_code=500, detail=f"Error listando algoritmos: {str(e)}")
 
 
-@app.delete("/models/{model_name}", summary="Eliminar modelo")
+@app.delete("/models/{model_name}", summary="Eliminar modelo", response_model=None)
 async def delete_model(model_name: str):
     """Elimina un modelo entrenado del almacenamiento"""
     try:
+        logger.info(f"Solicitud para eliminar modelo: {model_name}")
         models = get_available_models()
+        logger.info(f"Total de modelos disponibles: {len(models)}")
 
         model_key = None
         if model_name in models:
             model_key = model_name
+            logger.info(f"Modelo encontrado exactamente: {model_key}")
         else:
             matching_models = [k for k in models.keys() if 
                              model_name in k or 
@@ -604,9 +548,13 @@ async def delete_model(model_name: str):
                              k.startswith(f"{model_name}_")]
             if matching_models:
                 model_key = matching_models[0]
+                logger.info(f"Modelo encontrado por coincidencia parcial: {model_key}")
+            else:
+                logger.warning(f"No se encontraron coincidencias para modelo: {model_name}")
         
         if not model_key:
             available_models = list(models.keys())
+            logger.warning(f"Modelo no encontrado. Disponibles: {available_models}")
             raise HTTPException(
                 status_code=404, 
                 detail=f"Modelo {model_name} no encontrado. Modelos disponibles: {available_models[:10]}{'...' if len(available_models) > 10 else ''}"
@@ -614,17 +562,50 @@ async def delete_model(model_name: str):
         
         model_info = models[model_key]
         model_path = model_info["file_path"]
+        logger.info(f"Intentando eliminar archivo: {model_path}")
         
         if os.path.exists(model_path):
-            os.remove(model_path)
-            logger.info(f"Modelo {model_key} eliminado de {model_path}")
-            return {
-                "message": f"Modelo {model_key} eliminado exitosamente",
-                "deleted_file": model_path,
-                "original_request": model_name
-            }
+            try:
+                os.remove(model_path)
+                logger.info(f"Modelo {model_key} eliminado exitosamente de {model_path}")
+                  # Limpiar caché si existe
+                global models_cache
+                models_cache = {}  # Limpiar toda la caché para forzar recargar todos los modelos
+                logger.info(f"Cache de modelos limpiada completamente")
+                
+                # Verificar que el modelo ya no existe
+                if os.path.exists(model_path):
+                    logger.error(f"ERROR: El archivo {model_path} todavía existe después de intentar eliminarlo")
+                    raise HTTPException(
+                        status_code=500, 
+                        detail=f"El archivo no pudo ser eliminado completamente: {model_path}"
+                    )
+                
+                return {
+                    "success": True,
+                    "message": f"Modelo {model_key} eliminado exitosamente",
+                    "deleted_file": model_path,
+                    "original_request": model_name,
+                    "timestamp": datetime.now().isoformat()
+                }
+            except PermissionError:
+                logger.error(f"Error de permisos al eliminar archivo: {model_path}")
+                raise HTTPException(
+                    status_code=403, 
+                    detail=f"Sin permisos para eliminar el archivo: {model_path}"
+                )
+            except Exception as file_error:
+                logger.error(f"Error al eliminar archivo {model_path}: {file_error}")
+                raise HTTPException(
+                    status_code=500, 
+                    detail=f"Error al eliminar archivo: {str(file_error)}"
+                )
         else:
-            raise HTTPException(status_code=404, detail=f"Archivo del modelo no encontrado: {model_path}")
+            logger.warning(f"Archivo del modelo no encontrado: {model_path}")
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Archivo del modelo no encontrado: {model_path}"
+            )
             
     except HTTPException:
         raise
