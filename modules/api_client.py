@@ -3,7 +3,7 @@ import streamlit as st
 import pandas as pd
 import os
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
@@ -379,43 +379,48 @@ def render_predictions_tab(api_client: APIClient):
         render_batch_prediction(api_client, model_names)
 
 
+
 def render_individual_prediction(api_client: APIClient, model_names: List[str], models: Dict):
     """Renderiza predicción individual"""
     st.subheader("📝 Predicción Individual")
     
     col1, col2 = st.columns([2, 1])
-    
     with col1:
         selected_model = st.selectbox("Seleccionar Modelo", model_names)
-    
     with col2:
-        return_probabilities = st.checkbox("Incluir Probabilidades", value=True)
-
+        return_probabilities = st.checkbox("Incluir Probabilidades", value=True)    
+    
     if selected_model:
         model_info = models[selected_model]
         st.info(f"Dataset: {model_info.get('dataset')} | Accuracy: {model_info.get('accuracy', 0):.4f}")
-        
         dataset = model_info.get('dataset', 'iris')
+        
         if dataset == 'iris':
-            feature_names = ['Sepal Length', 'Sepal Width', 'Petal Length', 'Petal Width']
-            n_features = 4
-        elif dataset == 'wine':
-            feature_names = [f'Feature_{i+1}' for i in range(13)]
-            n_features = 13
+            feature_names = ['sepal length (cm)', 'sepal width (cm)', 'petal length (cm)', 'petal width (cm)']
         elif dataset == 'breast_cancer':
-            feature_names = [f'Feature_{i+1}' for i in range(30)]
-            n_features = 30
+            feature_names = [
+                'mean radius', 'mean texture', 'mean perimeter', 'mean area', 'mean smoothness', 
+                'mean compactness', 'mean concavity', 'mean concave points', 'mean symmetry', 'mean fractal dimension',
+                'radius error', 'texture error', 'perimeter error', 'area error', 'smoothness error', 
+                'compactness error', 'concavity error', 'concave points error', 'symmetry error', 'fractal dimension error',
+                'worst radius', 'worst texture', 'worst perimeter', 'worst area', 'worst smoothness',
+                'worst compactness', 'worst concavity', 'worst concave points', 'worst symmetry', 'worst fractal dimension'
+            ]
+        elif dataset == 'wine':
+            feature_names = ['alcohol', 'malic_acid', 'ash', 'alcalinity_of_ash', 'magnesium', 'total_phenols', 
+                           'flavanoids', 'nonflavanoid_phenols', 'proanthocyanins', 'color_intensity', 'hue', 
+                           'od280/od315_of_diluted_wines', 'proline']
         elif dataset == 'digits':
-            feature_names = [f'Pixel_{i+1}' for i in range(64)]
-            n_features = 64
+            feature_names = [f'pixel_{i}' for i in range(64)]
         else:
-            feature_names = [f'Feature_{i+1}' for i in range(4)]
-            n_features = 4
+            feature_names = [f'Feature {i+1}' for i in range(model_info.get('n_features', 4))]
+        
+        n_features = len(feature_names)
         
         st.subheader("Introducir Características")
-        
         features = []
-        if n_features <= 8:  
+        if n_features <= 8:
+            st.write(f"Características del modelo ({n_features} en total):")
             cols = st.columns(min(n_features, 4))
             for i in range(n_features):
                 with cols[i % 4]:
@@ -423,13 +428,15 @@ def render_individual_prediction(api_client: APIClient, model_names: List[str], 
                         feature_names[i] if i < len(feature_names) else f"Feature {i+1}",
                         value=1.0,
                         step=0.1,
-                        key=f"feature_{i}_{selected_model}"
+                        key=f"feature_{i}_{selected_model}",
+                        format="%.4f"
                     )
                     features.append(value)
-        else:  
-            st.info(f"Este modelo requiere {n_features} características. Use los valores predefinidos o modifique según necesite.")
+        
             
+        else:
             if dataset == 'breast_cancer':
+                
                 example_features = [1.799e+01, 1.038e+01, 1.228e+02, 1.001e+03, 1.184e-01, 2.776e-01, 
                                   3.001e-01, 1.471e-01, 2.419e-01, 7.871e-02, 1.095e+00, 9.053e-01,
                                   8.589e+00, 1.534e+02, 6.399e-03, 4.904e-02, 5.373e-02, 1.587e-02,
@@ -438,21 +445,33 @@ def render_individual_prediction(api_client: APIClient, model_names: List[str], 
             elif dataset == 'digits':
                 example_features = [0.0] * 64  
             else:
-                example_features = [1.0] * n_features
+                example_features = [1.0] * n_features           
+            st.write(f"Todas las características ({n_features} en total):")
+        
+            feature_tabs = st.tabs(["Editor por Grupos"])
             
-            # Mostrar algunas características editables
-            st.write("Primeras 8 características (editable):")
-            cols = st.columns(4)
-            for i in range(n_features):
-                with cols[i % 4]:
-                    value = st.number_input(
-                        f"F{i+1}",
-                        value=float(example_features[i]),
-                        step=0.1,
-                        key=f"feature_{i}_{selected_model}"
-                    )
-                    example_features[i] = value
-            
+            with feature_tabs[0]:
+                num_tabs = (n_features + 15) // 16  
+                group_tabs = st.tabs([f"Grupo {i+1}" for i in range(num_tabs)])
+                
+                for tab_idx, tab in enumerate(group_tabs):
+                    with tab:
+                        start_idx = tab_idx * 16
+                        end_idx = min(start_idx + 16, n_features)
+                        st.write(f"Características {start_idx+1}-{end_idx}")
+                        
+                        cols = st.columns(4)
+                        for i in range(start_idx, end_idx):
+                            with cols[(i-start_idx) % 4]:
+                                value = st.number_input(
+                                    f"{feature_names[i]}" if i < len(feature_names) else f"F{i+1}",
+                                    value=float(example_features[i]),
+                                    step=0.1,
+                                    key=f"feature_{i}_{selected_model}",
+                                    format="%.4f"
+                                )
+                                example_features[i] = value
+           
             features = example_features
 
         if st.button("🔮 Realizar Predicción", type="primary"):
@@ -478,15 +497,27 @@ def render_individual_prediction(api_client: APIClient, model_names: List[str], 
                     
                     with col3:
                         st.metric("Características", result["feature_count"])
+                        
                     
                     if result.get("probabilities"):
                         st.subheader("Probabilidades por Clase")
                         probs = result["probabilities"][0]
- 
+                        
+                        if dataset == 'iris':
+                            class_names = ['Setosa', 'Versicolor', 'Virginica']
+                        elif dataset == 'wine':
+                            class_names = ['Clase 1', 'Clase 2', 'Clase 3']
+                        elif dataset == 'breast_cancer':
+                            class_names = ['Benigno', 'Maligno']
+                        else:
+                            class_names = [f"Clase {i}" for i in range(len(probs))]
+                        
+                        
+                        # Gráfico de barras con las probabilidades
                         fig = px.bar(
-                            x=[f"Clase {i}" for i in range(len(probs))],
+                            x=class_names[:len(probs)],
                             y=probs,
-                            title="Distribución de Probabilidades",
+                            title="Distribución de Probabilidades por Clase",
                             labels={"x": "Clase", "y": "Probabilidad"}
                         )
                         st.plotly_chart(fig, use_container_width=True)
@@ -542,10 +573,12 @@ def render_batch_prediction(api_client: APIClient, model_names: List[str]):
                             st.metric("Características", result["feature_count"])
                         with col3:
                             st.metric("Tiempo Total", f"{result['prediction_time']:.3f}s")
+                        
                         with col4:
                             st.metric("Tiempo/Muestra", f"{result['prediction_time']/result['n_samples']:.4f}s")
 
-                        st.subheader("Resultados de Predicción")
+                        
+                            st.subheader("Resultados de Predicción")
                         
                         results_df = df.copy()
                         results_df['Predicción'] = result["predictions"]

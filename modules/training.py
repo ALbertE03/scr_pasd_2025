@@ -255,7 +255,7 @@ def run_distributed_training_advanced(dataset_name, selected_models, hyperparame
             nodes = ray.nodes()
             alive_nodes = [node for node in nodes if node.get('Alive', False)]
             
-            status_text.text(f"🚀 Conectado al cluster Ray con {len(alive_nodes)} nodos y {cpu_count} CPUs disponibles")
+            status_text.text(f"🚀 Conectado al cluster Ray")
 
             with st.expander("Detalles del cluster Ray", expanded=False):
                 st.write(f"Nodos totales: {len(nodes)}")

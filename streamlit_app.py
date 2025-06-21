@@ -45,7 +45,7 @@ tab_titles = [
     "🔍 Estado del Cluster",
     "🧠 Entrenamiento ML",
     "🌐 API de Modelos",
-    "💻 Métricas del Sistema",
+    #"💻 Métricas del Sistema",
 ]
 
 tabs = st.tabs(tab_titles)
@@ -85,8 +85,8 @@ with tabs[1]:
 with tabs[2]:
     render_api_tab()
 
-with tabs[3]:
-    render_system_metrics_tab(system_metrics)
+#with tabs[3]:
+ #   render_system_metrics_tab(system_metrics)
 
 if st.session_state.auto_refresh:
     st.rerun()

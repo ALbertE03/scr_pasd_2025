@@ -344,182 +344,25 @@ def load_custom_styles():
     </style>
     """, unsafe_allow_html=True)
 
-def detect_current_ray_leader():
-    """Detecta quién es el líder actual del clúster Ray
-    
-    Esta función busca en los contenedores Docker para identificar el nodo líder,
-    con preferencia por 'ray-leader-new' cuando existe.
-    
-    Returns:
-        str: El nombre del contenedor que actúa como líder
-    """
-    try:
-        import docker
-        
-        # Intentar con cliente Docker
-        try:
-            client = docker.from_env()
-            
-            # 1. Buscar primero el nuevo líder por nombre específico
-            try:
-                new_leader = client.containers.get('ray-leader-new')
-                if new_leader.status == 'running':
-                    logger.info("Detectado nuevo líder: ray-leader-new")
-                    return 'ray-leader-new'
-            except:
-                pass
-                
-            # 2. Buscar el líder original
-            try:
-                orig_leader = client.containers.get('ray-head')
-                if orig_leader.status == 'running':
-                    logger.info("Detectado líder original: ray-head")
-                    return 'ray-head'
-            except:
-                pass
-            
-            # 3. Buscar cualquier contenedor que tenga la variable de entorno LEADER_NODE=true
-            containers = client.containers.list(filters={"status": "running"})
-            for container in containers:
-                if container.name.startswith("ray-"):
-                    try:
-                        # Inspeccionar variables de entorno
-                        env_vars = container.attrs['Config']['Env']
-                        for env in env_vars:
-                            if env.startswith("LEADER_NODE=true"):
-                                logger.info(f"Detectado líder por variable de entorno: {container.name}")
-                                return container.name
-                    except:
-                        continue
-            
-            # Si llegamos aquí, no encontramos un líder definido
-            logger.warning("No se pudo detectar un líder específico, usando valor por defecto")
-            return os.getenv('RAY_HEAD_SERVICE_HOST', 'ray-head')
-            
-        except Exception as e:
-            logger.error(f"Error al conectar con Docker: {e}")
-            return os.getenv('RAY_HEAD_SERVICE_HOST', 'ray-head')
-            
-    except ImportError:
-        logger.warning("Módulo docker no disponible, usando configuración por defecto")
-        return os.getenv('RAY_HEAD_SERVICE_HOST', 'ray-head')
-
-def connect_to_ray_cluster(max_retries=3):
-    """Conecta al clúster Ray con manejo automático de redirección al nuevo líder
-    
-    Esta función intenta conectar al clúster Ray y maneja el caso en que el nodo líder
-    haya cambiado debido a un failover.
-    
-    Args:
-        max_retries: Número máximo de intentos de conexión
-        
-    Returns:
-        bool: True si la conexión fue exitosa, False en caso contrario
-    """
-    # Detectar el líder actual consultando Docker
-    current_head = detect_current_ray_leader()
-    st.session_state['current_leader'] = current_head
-    
-    logger.info(f"Intentando conectar al clúster Ray. Nodo líder detectado: {current_head}")
-    
-    # Si Ray ya está conectado, verificar si está conectado al líder correcto
-    if ray.is_initialized():
-        try:
-            # Verificar si la conexión actual es válida
-            ray.get(ray.put(1))
-            logger.info(f"Ya conectado al clúster Ray (verificando si es el líder correcto)")
-            
-            # Obtener información de la conexión actual
-            current_address = ray._private.worker.global_worker.node_ip_address
-            logger.info(f"Dirección de conexión actual: {current_address}")
-            
-            # Si es el líder correcto, seguimos conectados, de lo contrario reconectamos
-            if current_address == current_head or current_address == "127.0.0.1":
-                logger.info(f"Mantenemos conexión actual a Ray")
-                return True
-                
-            # Si no, desconectamos para reconectar al nuevo líder
-            logger.info(f"Desconectando de {current_address} para reconectar a {current_head}")
-            ray.shutdown()
-        except:
-            # La conexión existente falló, desconectar para reconectar
-            logger.warning("Conexión existente a Ray inválida, reconectando...")
-            ray.shutdown()
-    
-    # Intentar conexión con múltiples reintentos
-    for attempt in range(max_retries):
-        try:
-            # Intentar conectar al líder conocido
-            ray.init(address=f"{current_head}:6379", ignore_reinit_error=True)
-            logger.info(f"Conectado exitosamente al clúster Ray ({current_head})")
-            st.session_state.current_leader = current_head
-            return True
-        except Exception as e:
-            logger.warning(f"Error al conectar a Ray en {current_head} (intento {attempt+1}/{max_retries}): {e}")
-            
-            # Si falla, intentar cargar el nuevo líder desde la configuración
-            try:
-                if os.path.exists("leader_config.json"):
-                    with open("leader_config.json", "r") as f:
-                        config = json.load(f)
-                        new_head = config.get("active_head_node")
-                        
-                        if new_head and new_head != current_head:
-                            logger.info(f"Detectado nuevo líder en config: {new_head}, intentando reconectar...")
-                            current_head = new_head
-                            st.session_state.current_leader = new_head
-                            continue
-            except:
-                pass
-                
-            # Si estamos en el último intento, buscar cualquier nodo Ray disponible
-            if attempt == max_retries - 1:
-                from modules.failover import get_eligible_nodes_for_promotion
-                eligible_nodes = get_eligible_nodes_for_promotion()
-                
-                if eligible_nodes:
-                    node = eligible_nodes[0]
-                    node_name = node["name"] if isinstance(node, dict) else node
-                    logger.info(f"Intentando conectar a nodo alternativo: {node_name}")
-                    
-                    try:
-                        ray.init(address=f"{node_name}:6379", ignore_reinit_error=True)
-                        logger.info(f"Conectado exitosamente a nodo alternativo: {node_name}")
-                        st.session_state.current_leader = node_name
-                        return True
-                    except Exception as alt_e:
-                        logger.error(f"Error al conectar a nodo alternativo: {alt_e}")
-            
-            # Esperar antes del siguiente intento
-            time.sleep(2)
-    
-    logger.error(f"No se pudo conectar al clúster Ray después de {max_retries} intentos")
-    return False
-
 def save_system_metrics_history(metrics):
     """Guarda las métricas del sistema en un archivo de historial"""
     try:
         history_file = 'system_metrics_history.json'
         
-        # Cargar historial existente
         if os.path.exists(history_file):
             with open(history_file, 'r') as f:
                 history = json.load(f)
         else:
             history = []
         
-        # Agregar timestamp actual
         metrics['timestamp'] = datetime.now().isoformat()
         
-        # Agregar nueva entrada
         history.append(metrics)
         
-        # Mantener solo las últimas 24 horas (asumiendo una entrada cada 5 minutos)
-        max_entries = 24 * 12  # 288 entradas
+        max_entries = 24 * 12 
         if len(history) > max_entries:
             history = history[-max_entries:]
         
-        # Guardar historial actualizado
         with open(history_file, 'w') as f:
             json.dump(history, f, indent=2)
             

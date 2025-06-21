@@ -111,7 +111,7 @@ services:
       sleep 10 &&
       ray start 
       --address=ray-head:6379 
-      --num-cpus=2 
+      --num-cpus=1 
       --object-manager-port=8076 
       --node-manager-port=8077 
       --min-worker-port=10002 
@@ -143,7 +143,7 @@ services:
       sleep 15 &&
       ray start 
       --address=ray-head:6379 
-      --num-cpus=2 
+      --num-cpus=1 
       --object-manager-port=8076 
       --node-manager-port=8077 
       --min-worker-port=10002 
@@ -175,7 +175,7 @@ services:
       sleep 20 &&
       ray start 
       --address=ray-head:6379 
-      --num-cpus=2 
+      --num-cpus=1 
       --object-manager-port=8076 
       --node-manager-port=8077 
       --min-worker-port=10002 
