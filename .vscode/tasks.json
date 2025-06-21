@@ -1,5 +1,19 @@
 {
 	"version": "2.0.0",
+	"inputs": [
+		{
+			"id": "workerName",
+			"description": "Nombre del worker (dejar vacío para nombre automático)",
+			"default": "",
+			"type": "promptString"
+		},
+		{
+			"id": "workerCPUs",
+			"description": "Número de CPUs para asignar al worker",
+			"default": "2",
+			"type": "promptString"
+		}
+	],
 	"tasks": [
 		{
 			"label": "Start Ray Cluster (Docker Compose)",
@@ -44,7 +58,24 @@
 			"problemMatcher": []
 		},
 		{
-			"label": "Add External Worker",
+			"label": "Add External Worker (Custom)",
+			"type": "shell",
+			"command": "powershell.exe",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}/add_external_worker.ps1",
+				"-WorkerName",
+				"${input:workerName}",
+				"-CPUs",
+				"${input:workerCPUs}"
+			],
+			"group": "build",
+			"problemMatcher": []
+		},
+		{
+			"label": "Add External Worker (Auto-named)",
 			"type": "shell",
 			"command": "powershell.exe",
 			"args": [
@@ -145,6 +176,33 @@
 			"type": "shell",
 			"command": "docker-compose",
 			"args": ["up", "-d", "ml-api"],
+			"group": "build",
+			"problemMatcher": []
+		},
+		{
+			"label": "List Ray Nodes",
+			"type": "shell",
+			"command": "powershell.exe",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}/list_ray_nodes.ps1"
+			],
+			"group": "build",
+			"problemMatcher": []
+		},
+		{
+			"label": "List Ray Nodes (Detailed)",
+			"type": "shell",
+			"command": "powershell.exe",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}/list_ray_nodes.ps1",
+				"-ShowDetail"
+			],
 			"group": "build",
 			"problemMatcher": []
 		}

@@ -481,7 +481,7 @@ def add_external_worker(worker_name,add_cpu):
                     tail -f /dev/null"
             """
         else:
-            st.info("ejecute el contenedor de docker ")
+            st.info("Ejecutando script externo para añadir worker. Este proceso puede tardar unos momentos...")
         
         result = subprocess.run(
             command,
