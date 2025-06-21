@@ -804,38 +804,7 @@ def render_inference_stats_tab(api_client: APIClient):
             st.dataframe(pd.DataFrame(recent_data), use_container_width=True)
         else:
             st.info("No hay inferencias registradas para este modelo.")
-    st.subheader("Información del Sistema")
-
-    models_response = api_client.get_models()
-    models = models_response["data"].get("models", {}) if models_response["status"] == "success" else {}
     
-    health_status = api_client.health_check()
-    cluster_status = api_client.get_cluster_status()
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        total_models = len(models)
-        st.metric("Modelos Disponibles", total_models)
-    
-    with col2:
-        if health_status["status"] == "success":
-            ray_status = health_status["data"].get("ray_initialized", False)
-            st.metric("Ray Status", "Conectado" if ray_status else "Desconectado")
-        else:
-            st.metric("API Status", "Error")
-    
-    with col3:
-        if cluster_status["status"] == "success":
-            alive_nodes = cluster_status["data"].get("alive_nodes", 0)
-            total_nodes = cluster_status["data"].get("total_nodes", 0)
-            st.metric("Nodos Cluster", f"{alive_nodes}/{total_nodes}")
-        else:
-            st.metric("Nodos Cluster", "N/A")
-    
-    with col4:
-        total_size = sum(model.get("file_size_mb", 0) for model in models.values())
-        st.metric("Tamaño Total Modelos", f"{total_size:.1f} MB")
 
 
 def delete_model_confirm(api_client: APIClient, model_name: str):
