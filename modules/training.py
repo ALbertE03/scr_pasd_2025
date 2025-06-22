@@ -10,7 +10,7 @@ import pickle
 import ray
 from sklearn.metrics import log_loss, accuracy_score
 from sklearn.model_selection import train_test_split
-
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 def load_training_results():
     """Carga los resultados de entrenamiento guardados"""
     results = {}
@@ -290,17 +290,20 @@ def run_distributed_training_advanced(dataset_name, selected_models, hyperparame
             }
         
         @ray.remote(num_cpus=1,max_retries=3, retry_exceptions=True)
-        def train_model_with_tracking(model, model_name, X, y, fold_idx, total_folds,d):
+        def train_model_with_tracking(model, model_name, X, y, fold_idx,d):
             """Función remota para entrenar un modelo y rastrear su progreso"""      
             try:
 
-                X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=d if d else st.session_state.test_size, random_state=fold_idx)
+                X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=d if d else st.session_state.test_size,random_state=42)
 
                 model.fit(X_train, y_train)
 
+                
                 train_preds = model.predict(X_train)
                 val_preds = model.predict(X_val)
-
+                train_cm = confusion_matrix(y_train, train_preds).tolist()
+                val_cm = confusion_matrix(y_val, val_preds).tolist()
+            
                 train_acc = accuracy_score(y_train, train_preds)
                 val_acc = accuracy_score(y_val, val_preds)
 
@@ -329,8 +332,10 @@ def run_distributed_training_advanced(dataset_name, selected_models, hyperparame
 
                 if train_loss > 10:
                     train_loss = min(10.0, train_loss)
+                
                 if val_loss > 10:
-                    val_loss = min(10.0, val_loss)
+                        val_loss = min(10.0, val_loss)
+                
                 return {
                     'model_name': model_name,
                     'fold': fold_idx,
@@ -340,7 +345,9 @@ def run_distributed_training_advanced(dataset_name, selected_models, hyperparame
                         'accuracy': train_acc,
                         'loss': train_loss,
                         'val_accuracy': val_acc,
-                        'val_loss': val_loss
+                        'val_loss': val_loss,
+                        'train_confusion_matrix': train_cm,
+                        'val_confusion_matrix': val_cm
                     }
                 }
             except Exception as e:
@@ -364,7 +371,7 @@ def run_distributed_training_advanced(dataset_name, selected_models, hyperparame
                 node_idx = i % len(alive_nodes)
                 node_id = alive_nodes[node_idx]['NodeID']
                 training_history[model_name]['node_assignment'] = node_id
-                task = train_model_with_tracking.options(num_cpus=1,max_retries=3, retry_exceptions=True).remote(model, model_name, X, y, 0, 1,data_size)
+                task = train_model_with_tracking.options(num_cpus=1,max_retries=3, retry_exceptions=True).remote(model, model_name, X, y, 0, 1)
                 
                 tasks.append(task)
                 task_mapping[task] = (model_name, 0)  
@@ -375,7 +382,7 @@ def run_distributed_training_advanced(dataset_name, selected_models, hyperparame
         else:
 
             for model_name, model in models_to_train.items():
-                task = train_model_with_tracking.remote(model, model_name, X, y, 0, 1)
+                task = train_model_with_tracking.remote(model, model_name, X, y,1,data_size)
                 task_mapping[task] = (model_name, 0)  
                 tasks.append(task)
 
@@ -412,6 +419,8 @@ def run_distributed_training_advanced(dataset_name, selected_models, hyperparame
                     training_history[model_name]['loss'] = loss
                     training_history[model_name]['val_accuracy'] = val_accuracy
                     training_history[model_name]['val_loss'] = val_loss
+                    training_history[model_name]['train_confusion_matrix']=metrics['train_confusion_matrix']
+                    training_history[model_name]['val_confusion_matrix']=metrics['val_confusion_matrix']
 
                     with metrics_container.container():
                         st.caption(f"Entrenando {model_name} - Progreso {completed_tasks}/{total_tasks} ({(completed_tasks/total_tasks)*100:.0f}%)")
@@ -451,12 +460,14 @@ def run_distributed_training_advanced(dataset_name, selected_models, hyperparame
                 end_time = time.time()
                 training_duration = end_time - start_time
                 
-                results[model_name] = {
+            results[model_name] = {
                     "accuracy": float(training_history[model_name]["val_accuracy"]),
                     "training_time": training_duration,
                     "cv_mean": float(training_history[model_name]["val_accuracy"]), 
                     "cv_std": 0.0,  
-                    "timestamp": datetime.now().isoformat()
+                    "timestamp": datetime.now().isoformat(),
+                    'train_confusion_matrix':training_history[model_name]['train_confusion_matrix'],
+                    'val_confusion_matrix':training_history[model_name]['val_confusion_matrix']
                 }
             
         progress_bar.progress(1.0)
@@ -491,6 +502,7 @@ def run_distributed_training_advanced(dataset_name, selected_models, hyperparame
                             # Guardar métricas del modelo
                             metrics = task.get('metrics', {})
                             saved_models[model_name] = {
+                                
                                 'accuracy': metrics.get('val_accuracy', metrics.get('accuracy', 0)),
                                 'val_accuracy': metrics.get('val_accuracy', 0),
                                 'loss': metrics.get('loss', 0),

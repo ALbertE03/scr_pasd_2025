@@ -2,9 +2,14 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import numpy as np
 import os
 import time
 import ray
+import pickle
+import json
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+import matplotlib.pyplot as plt
 from .cluster import get_system_metrics
 from .training import (
     plot_model_comparison,
@@ -349,15 +354,17 @@ def run(datasets:List, models:List, hyperparameters:Dict)->Tuple:
                 raise ValueError(f"Error al obtener el dataset desde Ray: {str(e)}")
 
             test_size = data_size if data_size is not None else 0.3
-            X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=test_size, random_state=42)
+            X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=test_size,random_state=42)
             
-            start_time = time.time()
-
+            start_time = time.time()            
             model.fit(X_train, y_train)
             
             train_preds = model.predict(X_train)
             val_preds = model.predict(X_val)
 
+            train_cm = confusion_matrix(y_train, train_preds).tolist()
+            val_cm = confusion_matrix(y_val, val_preds).tolist()
+            
             train_acc = accuracy_score(y_train, train_preds)
             val_acc = accuracy_score(y_val, val_preds)
 
@@ -385,10 +392,11 @@ def run(datasets:List, models:List, hyperparameters:Dict)->Tuple:
             val_loss = max(0, val_loss)
 
             
-            if train_loss > 10:
-                    train_loss = min(10.0, train_loss)
+            if train_loss > 10:                    
+                train_loss = min(10.0, train_loss)
             if val_loss > 10:
                     val_loss = min(10.0, val_loss)
+                    
             return {
                     'model_name': model_name,
                     'status': 'success',
@@ -397,7 +405,9 @@ def run(datasets:List, models:List, hyperparameters:Dict)->Tuple:
                         'accuracy': train_acc,
                         'loss': train_loss,
                         'val_accuracy': val_acc,
-                        'val_loss': val_loss
+                        'val_loss': val_loss,
+                        'train_confusion_matrix': train_cm,
+                        'val_confusion_matrix': val_cm
                     }
                 }
         except Exception as e:
@@ -455,17 +465,20 @@ def run(datasets:List, models:List, hyperparameters:Dict)->Tuple:
                             results[dataset_name] = {}
                         if dataset_name not in training_history:
                             training_history[dataset_name] = {}
-                        
-                        results[dataset_name][model_name] = result['metrics']
                         start_time = training_history[dataset_name][model_name].get('start_time', time.time())
                         end_time = time.time()
                         training_duration = end_time - start_time
+                        
+                        metrics = result['metrics'].copy()
+                        metrics['training_time'] = training_duration
+                        results[dataset_name][model_name] = metrics
+                        
                         training_history[dataset_name][model_name] = {
-                        'accuracy': result['metrics']['accuracy'],
-                        'val_accuracy': result['metrics']['val_accuracy'],
-                        'loss': result['metrics']['loss'],
-                        'val_loss': result['metrics']['val_loss'] ,
-                        'training_time':training_duration                 
+                            'accuracy': result['metrics']['accuracy'],
+                            'val_accuracy': result['metrics']['val_accuracy'],
+                            'loss': result['metrics']['loss'],
+                            'val_loss': result['metrics']['val_loss'],
+                            'training_time': training_duration                 
                         }
                     
                         status_container.info(f"✅ Completado: {dataset_name} / {model_name} (Accuracy: {result['metrics']['accuracy']:.4f})")
@@ -487,11 +500,10 @@ def run(datasets:List, models:List, hyperparameters:Dict)->Tuple:
     progress.progress(100)
     status_container.success(f"✅ Entrenamiento completado - {len(results)} datasets procesados")
     
-    if len(results) > 0:
+    if len(results) > 0:        
         st.subheader("📊 Comparación entre Datasets")
 
         st.markdown("### 📈 Rendimiento del mismo modelo en diferentes datasets")
-
         comparison_data = []
         for dataset_name, dataset_results in results.items():
             for model_name, metrics in dataset_results.items():
@@ -500,12 +512,11 @@ def run(datasets:List, models:List, hyperparameters:Dict)->Tuple:
                     'Modelo': model_name,
                     'Accuracy': metrics.get('accuracy', 0),
                     'Tiempo (s)': metrics.get('training_time', 0),
-                    'CV Score': metrics.get('cv_mean', 0)
+                    'CV Score': metrics.get('cv_mean', 0.5)
                 })
-        
         if len(comparison_data) > 0:
             df_comparison = pd.DataFrame(comparison_data)
-
+                    
             fig_models = px.bar(
                 df_comparison,
                 x="Modelo", 
@@ -521,7 +532,7 @@ def run(datasets:List, models:List, hyperparameters:Dict)->Tuple:
                 plot_bgcolor='rgba(0,0,0,0)',
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
                 margin=dict(l=20, r=20, t=60, b=80)
-            )
+            )            
             st.plotly_chart(fig_models, use_container_width=True)
             
             fig_time = px.scatter(
@@ -530,25 +541,65 @@ def run(datasets:List, models:List, hyperparameters:Dict)->Tuple:
                 y="Accuracy", 
                 color="Dataset", 
                 size="CV Score",
-                hover_data=["Modelo"],
+                hover_data=["Modelo", "Tiempo (s)", "Accuracy"],
                 title="Tiempo de Entrenamiento vs Accuracy por Dataset",
-                height=500
+                height=500,
+                labels={"Tiempo (s)": "Tiempo (segundos)", "Accuracy": "Precisión"},
+                color_discrete_sequence=px.colors.qualitative.Bold
             )
             fig_time.update_layout(
                 plot_bgcolor='rgba(0,0,0,0)',
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                xaxis=dict(title="Tiempo de Entrenamiento (segundos)"),
+                yaxis=dict(title="Precisión", tickformat=".0%", range=[0, 1])
             )
             st.plotly_chart(fig_time, use_container_width=True)
-            
             st.markdown("### 🔍 Análisis por Dataset")
             dataset_tabs = st.tabs([f"Dataset: {dataset}" for dataset in results.keys()])
-            
+            o=0
             for i, (dataset, tab) in enumerate(zip(results.keys(), dataset_tabs)):
                 with tab:
                     if dataset in training_history:
                         st.markdown(f"#### Métricas de entrenamiento: {dataset}")
                         plot_training_metrics(training_history[dataset], chart_prefix=f"tab_{i}")
-
+                        
+                        st.markdown("#### 🧩 Matrices de Confusión")
+                        model_tabs = st.tabs([f"Modelo: {model}" for model in results[dataset].keys()])
+                        
+                        for j, (model_name, model_tab) in enumerate(zip(results[dataset].keys(), model_tabs)):
+                            with model_tab:
+                                metrics = results[dataset][model_name]
+                                if 'val_confusion_matrix' in metrics and 'train_confusion_matrix' in metrics:
+                                    col1, col2 = st.columns(2)
+                                    
+                                    with col1:
+                                        st.markdown("**Matriz de Confusión (Entrenamiento)**")
+                                        train_cm = np.array(metrics['train_confusion_matrix'])
+                                        fig_train_cm = px.imshow(train_cm,
+                                                    labels=dict(x="Predicción", y="Real", color="Cantidad"),
+                                                    x=[f"Clase {i}" for i in range(len(train_cm))],
+                                                    y=[f"Clase {i}" for i in range(len(train_cm))],
+                                                    color_continuous_scale="blues",
+                                                    text_auto=True)
+                                        fig_train_cm.update_layout(width=400, height=400)
+                                        st.plotly_chart(fig_train_cm, use_container_width=True,key=f"_q{o}{model_name}")
+                                    
+                                    with col2:
+                                        st.markdown("**Matriz de Confusión (Validación)**")
+                                        val_cm = np.array(metrics['val_confusion_matrix'])
+                                        fig_val_cm = px.imshow(val_cm,
+                                                    labels=dict(x="Predicción", y="Real", color="Cantidad"),
+                                                    x=[f"Clase {i}" for i in range(len(val_cm))],
+                                                    y=[f"Clase {i}" for i in range(len(val_cm))],
+                                                    color_continuous_scale="reds",
+                                                    text_auto=True)                                        
+                                        fig_val_cm.update_layout(width=400, height=400)
+                                        st.plotly_chart(fig_val_cm, use_container_width=True,key=f'_s{o}{model_name}')
+                            
+                                else:
+                                    st.warning("No hay datos de matrices de confusión disponibles para este modelo")
+                            o+=1
+                o+=1
     
     for _i,j,k in _models:
         history_filename = os.path.join("training_results", f"training_history_{k}.json")
@@ -757,9 +808,8 @@ def render_advanced_training(cluster_status):
             
             st.session_state.training_in_progress = False
             
-            if results and len(results) > 0:
+            if results and len(results) > 0:                
                 st.success(f"✅ Entrenamiento completado exitosamente para el dataset {selected_dataset}")
-
                 st.session_state.training_results = {selected_dataset: results}
 
                 st.subheader("📊 Métricas de Entrenamiento")
@@ -770,12 +820,12 @@ def render_advanced_training(cluster_status):
                 
                 st.session_state.last_trained_dataset = selected_dataset
                 st.session_state.last_training_history = training_history
+                
 
 def render_system_metrics_tab(system_metrics):
     """Renderiza la pestaña de métricas del sistema"""
     st.header("Métricas del Sistema")
-    
-    # Botón para refrescar métricas
+
     col_refresh1, col_refresh2, col_refresh3 = st.columns([1, 1, 1])
     with col_refresh2:
         if st.button("🔄 Refrescar Métricas", key="refresh_system_metrics"):
@@ -1026,7 +1076,6 @@ def render_system_metrics_tab(system_metrics):
         Para ver las métricas históricas, es necesario acumular datos a lo largo del tiempo.
         
         **¿Cómo generar datos históricos?**
-        1. 🔄 Haga clic en "Refrescar Métricas" regularmente
         2. ⏰ Los datos se acumularán automáticamente con cada actualización
         3. 📈 En unas horas tendrá un gráfico histórico completo
         
