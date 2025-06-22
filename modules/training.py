@@ -249,28 +249,12 @@ def run_distributed_training_advanced(dataset_name, selected_models, hyperparame
                 status_text.error("❌ No se pudo conectar con el cluster Ray")
                 return None, None
         try:
-            cluster_info = ray.cluster_resources()
-            cpu_count = int(cluster_info.get('CPU', 0))
-            gpu_count = int(cluster_info.get('GPU', 0))
             nodes = ray.nodes()
-            alive_nodes = [node for node in nodes if node.get('Alive', False)]
-            
+            alive_nodes = [node for node in nodes if node.get('Alive', False)]   
             status_text.text(f"🚀 Conectado al cluster Ray")
-
-            with st.expander("Detalles del cluster Ray", expanded=False):
-                st.write(f"Nodos totales: {len(nodes)}")
-                st.write(f"Nodos activos: {len(alive_nodes)}")
-                st.write(f"CPUs disponibles: {cpu_count}")
-                if gpu_count > 0:
-                    st.write(f"GPUs disponibles: {gpu_count}")
-                
-                for i, node in enumerate(alive_nodes):
-                    st.write(f"Nodo {i+1}: ID={node['NodeID'][:8]}, CPUs={node['Resources'].get('CPU', 0)}")
         except Exception as e:
             st.warning(f"No se pudo obtener información detallada del cluster Ray: {e}")
-
             alive_nodes = []
-            cpu_count = 0
         
 
         datasets = trainer.get_available_datasets()

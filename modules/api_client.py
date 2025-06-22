@@ -370,13 +370,13 @@ def render_predictions_tab(api_client: APIClient):
     
     model_names = list(models.keys())
     
-    prediction_tabs = st.tabs(["📝 Predicción Individual", "📁 Predicción en Lote"])
+    prediction_tabs = st.tabs(["📝 Predicción Individual"])#"📁 Predicción en Lote"])
     
     with prediction_tabs[0]:
         render_individual_prediction(api_client, model_names, models)
     
-    with prediction_tabs[1]:
-        render_batch_prediction(api_client, model_names)
+    #with prediction_tabs[1]:
+     #   render_batch_prediction(api_client, model_names)
 
 
 

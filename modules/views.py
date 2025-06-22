@@ -2,13 +2,21 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from .cluster import  get_system_metrics
+import os
+import time
+import ray
+from .cluster import get_system_metrics
 from .training import (
     plot_model_comparison,
     run_distributed_training_advanced
 )
 from .utils import save_system_metrics_history, get_metrics_for_timeframe
-from typing import List,Dict,Tuple
+from typing import List, Dict, Tuple
+from sklearn.metrics import log_loss, accuracy_score
+from sklearn.model_selection import train_test_split
+from train import DistributedMLTrainer
+import json 
+import pickle
 model_options = [
             # Modelos basados en árboles
             "RandomForest", 
@@ -69,6 +77,12 @@ def render_training_tab(cluster_status):
 
 def render(cluster_status):
     st.subheader("🚀 Entrenamiento Distribuido Avanzado")
+    st.markdown("""
+    <div class="success-card">
+        <h4>✅ Procesamiento de múltiples modelos y datasets en paralelo</h4>
+        <p>Entrene varios modelos y datasets simultáneamente aprovechando la potencia del cluster distribuido</p>
+    </div>
+    """, unsafe_allow_html=True)
     col1, col2 = st.columns([3, 2])
     with col1:
         datasets = ['iris', 'wine', 'breast_cancer', 'digits']
@@ -225,7 +239,7 @@ def render(cluster_status):
     co1, co2, co3 = st.columns([1,2,1])
     with co2:
         start_training = st.button(
-            "🚀 Iniciar Entrenamiento Distribuido (varios dataset secuenciales)", 
+            "🚀 Iniciar Entrenamiento Distribuido", 
             type="primary",
             key="advanced_start_training_button_pro",
         )
@@ -246,12 +260,13 @@ def render(cluster_status):
                 hyperparameters=hyperparams
             )
             st.session_state.training_in_progress = False
-def run(datasets:List,models:List,hyperparameters:Dict)->Tuple:
+def run(datasets:List, models:List, hyperparameters:Dict)->Tuple:
     """
-    Entrena múltiples datasets secuencialmente en una misma ejecución utilizando Ray para distribución
+    Entrena múltiples datasets en paralelo utilizando Ray para distribución, 
+    permitiendo que los nodos libres procesen otros datasets sin esperar
     
     Args:
-        datasets: Lista de nombres de datasets a entrenar secuencialmente
+        datasets: Lista de nombres de datasets a entrenar
         models: Lista de modelos a entrenar para cada dataset
         hyperparameters: Diccionario de hiperparámetros para cada modelo
         
@@ -262,38 +277,215 @@ def run(datasets:List,models:List,hyperparameters:Dict)->Tuple:
     training_history = {}
 
     status_container = st.empty()
-    status_container.info("🔄 Iniciando entrenamiento secuencial...")
+    status_container.info("🔄 Iniciando entrenamiento distribuido...")
     
     progress = st.progress(0)
-    dataset_count = len(datasets)
-    
-    for idx, dataset in enumerate(datasets):
-        progress_value = (idx / dataset_count) * 100
-        progress.progress(int(progress_value))
-        status_container.info(f"🔄 Procesando dataset {idx+1}/{dataset_count}: {dataset}")
-        
+    if not ray.is_initialized():
         try:
-            def update_progress(progress_value, status_msg):
-                pass 
+            head_address = os.getenv('RAY_HEAD_SERVICE_HOST', 'ray-head')
+            ray_port = os.getenv('RAY_HEAD_SERVICE_PORT', '10001')
             
-            dataset_results, dataset_history = run_distributed_training_advanced(
-                dataset_name=dataset,
-                selected_models=models,
-                hyperparameters=hyperparameters,
-                enable_fault_tolerance=True,
-                progress_callback=update_progress,
-                data_size=st.session_state.data_test_size[dataset]
-            )
+            connection_attempts = [
+                f"ray://{head_address}:{ray_port}",
+                f"{head_address}:{ray_port}",
+                "auto",
+                None
+            ]
             
-            if dataset_results:
-                results[dataset] = dataset_results
-                training_history[dataset] = dataset_history
-            
+            connected = False
+            for address in connection_attempts:
+                try:
+                    if address:
+                        status_container.info(f"⚠️ Intentando conectar a Ray en: {address}")
+                        ray.init(address=address, ignore_reinit_error=True)
+                    else:
+                        status_container.info("⚠️ Iniciando Ray en modo local...")
+                        ray.init(ignore_reinit_error=True)
+                    
+                    connected = True
+                    status_container.info(f"✅ Conectado a Ray en: {ray.get_runtime_context().gcs_address}")
+                    break
+                except Exception as e:
+                    status_container.warning(f"⚠️ No se pudo conectar a Ray en {address}: {str(e)}")
+                    continue
+                    
+            if not connected:
+                status_container.error("❌ No se pudo conectar al cluster Ray")
+                return {}, {}
+                
         except Exception as e:
-            st.error(f"Error al procesar {dataset}: {str(e)}")
+            status_container.error(f"❌ Error conectando con Ray: {str(e)}")
+            return {}, {}
+
+    trainer = DistributedMLTrainer()
+        
+    available_datasets = trainer.get_available_datasets()
+    dataset_objects = {}
+    
+    for dataset_name in datasets:
+        if dataset_name in available_datasets:
+            dataset_objects[dataset_name] = ray.get(available_datasets[dataset_name])
+    
+    available_models = trainer.get_available_models()
+    models_to_train = {}
+    
+    for model_name in models:
+        if model_name in available_models:
+            base_model = available_models[model_name]
+            if hyperparameters and model_name in hyperparameters:
+                for param, value in hyperparameters[model_name].items():
+                    if hasattr(base_model, param):
+                        setattr(base_model, param, value)
+            models_to_train[model_name] = base_model
+    @ray.remote(num_cpus=1, max_retries=3, retry_exceptions=True)
+    def train_model_for_dataset(model, model_name, dataset_ref, dataset_name, data_size=None):
+        """Función remota para entrenar un modelo en un dataset específico"""
+        try:
+            
+            try:
+                
+                X, y = dataset_ref.data, dataset_ref.target
+            except Exception as e:
+                raise ValueError(f"Error al obtener el dataset desde Ray: {str(e)}")
+
+            test_size = data_size if data_size is not None else 0.3
+            X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=test_size, random_state=42)
+            
+            start_time = time.time()
+
+            model.fit(X_train, y_train)
+            
+            train_preds = model.predict(X_train)
+            val_preds = model.predict(X_val)
+
+            train_acc = accuracy_score(y_train, train_preds)
+            val_acc = accuracy_score(y_val, val_preds)
+
+            try:
+                    train_probs = model.predict_proba(X_train)
+                    val_probs = model.predict_proba(X_val)
+                    train_loss = log_loss(y_train, train_probs)
+                    val_loss = log_loss(y_val, val_probs)
+            except:
+
+                    train_loss = 1.0 - train_acc
+                    val_loss = 1.0 - val_acc
+
+            train_acc = float(train_acc)
+            val_acc = float(val_acc)
+            train_loss = float(train_loss)
+            val_loss = float(val_loss)
+
+            if train_acc > 1:
+                    train_acc = min(1.0, train_acc / 100)
+            if val_acc > 1:
+                    val_acc = min(1.0, val_acc / 100)
+
+            train_loss = max(0, train_loss)
+            val_loss = max(0, val_loss)
+
+            
+            if train_loss > 10:
+                    train_loss = min(10.0, train_loss)
+            if val_loss > 10:
+                    val_loss = min(10.0, val_loss)
+            return {
+                    'model_name': model_name,
+                    'status': 'success',
+                    'model': model, 
+                    'metrics': {
+                        'accuracy': train_acc,
+                        'loss': train_loss,
+                        'val_accuracy': val_acc,
+                        'val_loss': val_loss
+                    }
+                }
+        except Exception as e:
+                return {
+                    'model_name': model_name,
+                    'status': 'failed',
+                    'error': str(e)
+                }
+    
+    all_tasks = []
+    task_mapping = {}  
+   
+           
+    total_task_count = len(datasets) * len(models_to_train)
+    status_container.info(f"🚀 Programando {total_task_count} tareas de entrenamiento")
+    for dataset_name, dataset_ref in dataset_objects.items():
+        for model_name, model in models_to_train.items():
+            if dataset_name not in training_history:
+                training_history[dataset_name]={}
+            training_history[dataset_name][model_name] = {
+                "accuracy": None,
+                "loss": None,
+                "val_accuracy": None,
+                "val_loss": None,
+                "start_time": time.time()
+            }
+            data_size = st.session_state.data_test_size.get(dataset_name, 0.3)
+            task = train_model_for_dataset.remote(model, model_name, dataset_ref, dataset_name, data_size)
+            all_tasks.append(task)
+            task_mapping[task] = (dataset_name, model_name)
+
+    remaining_tasks = list(all_tasks)
+    completed_tasks = 0
+    _models=[]
+    while remaining_tasks:
+        try:
+            done_ids, remaining_tasks = ray.wait(remaining_tasks, num_returns=2)
+
+            if not done_ids:
+                continue
+                
+            for done_id in done_ids:
+                try:
+                    dataset_name, model_name = task_mapping.get(done_id, ("desconocido", "desconocido"))
+                    
+                    try:
+                        result = ray.get(done_id)
+                    except Exception as ray_error:
+                        status_container.warning(f"⚠️ Error en tarea {dataset_name}/{model_name}: {str(ray_error)}")
+                        continue
+                    
+                    if result['status'] == 'success':
+                        _models.append((result['model'],model_name,dataset_name))
+                        if dataset_name not in results:
+                            results[dataset_name] = {}
+                        if dataset_name not in training_history:
+                            training_history[dataset_name] = {}
+                        
+                        results[dataset_name][model_name] = result['metrics']
+                        start_time = training_history[dataset_name][model_name].get('start_time', time.time())
+                        end_time = time.time()
+                        training_duration = end_time - start_time
+                        training_history[dataset_name][model_name] = {
+                        'accuracy': result['metrics']['accuracy'],
+                        'val_accuracy': result['metrics']['val_accuracy'],
+                        'loss': result['metrics']['loss'],
+                        'val_loss': result['metrics']['val_loss'] ,
+                        'training_time':training_duration                 
+                        }
+                    
+                        status_container.info(f"✅ Completado: {dataset_name} / {model_name} (Accuracy: {result['metrics']['accuracy']:.4f})")
+                    else:
+                        status_container.warning(f"⚠️ Error en tarea {dataset_name} / {model_name}: {result.get('error', 'Desconocido')}")
+                except Exception as task_error:
+                    status_container.error(f"Error procesando tarea individual: {str(task_error)}")
+                
+                completed_tasks += 1
+                progress_value = (completed_tasks / total_task_count) * 100
+                progress.progress(int(progress_value))
+                
+        except ray.exceptions.RayError as ray_error:
+            status_container.error(f"Error con Ray: {str(ray_error)}")
+            time.sleep(1)  
+        except Exception as general_error:
+            status_container.error(f"Error general en el bucle de procesamiento: {str(general_error)}")
     
     progress.progress(100)
-    status_container.success("✅ Entrenamiento completado")
+    status_container.success(f"✅ Entrenamiento completado - {len(results)} datasets procesados")
     
     if len(results) > 0:
         st.subheader("📊 Comparación entre Datasets")
@@ -356,7 +548,23 @@ def run(datasets:List,models:List,hyperparameters:Dict)->Tuple:
                     if dataset in training_history:
                         st.markdown(f"#### Métricas de entrenamiento: {dataset}")
                         plot_training_metrics(training_history[dataset], chart_prefix=f"tab_{i}")
+
     
+    for _i,j,k in _models:
+        history_filename = os.path.join("training_results", f"training_history_{k}.json")
+        with open(history_filename, 'w') as f:
+            json_history = {}
+            for model_name, data in training_history.items():
+                json_history[model_name] = {
+                        _k: _v for _k, _v in data.items() 
+                        if isinstance(_v, (list, dict, str, int, float)) or _v is None
+                    }
+            json.dump(json_history, f)
+        models_directory = os.path.join("training_results", f"models_{k}")
+        model_filename = os.path.join(models_directory, f"{j}.pkl")
+        os.makedirs(models_directory,exist_ok=True)
+        with open(model_filename, 'wb') as f:
+                pickle.dump(_i, f)
     return results, training_history
 def render_advanced_training(cluster_status):
     """Renderiza la interfaz de entrenamiento """
