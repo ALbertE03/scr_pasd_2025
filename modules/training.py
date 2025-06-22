@@ -499,7 +499,6 @@ def run_distributed_training_advanced(dataset_name, selected_models, hyperparame
                             with open(model_filename, 'wb') as f:
                                 pickle.dump(task['model'], f)
                             
-                            # Guardar métricas del modelo
                             metrics = task.get('metrics', {})
                             saved_models[model_name] = {
                                 

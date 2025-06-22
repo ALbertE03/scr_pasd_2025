@@ -265,13 +265,15 @@ def get_available_models() -> Dict[str, Dict]:
                 f"results_{dataset_name}.json",
                 os.path.join("training_results", f"results_{dataset_name}.json")
             ]
-            
             for result_file in result_files:
                 if os.path.exists(result_file):
                     try:
                         with open(result_file, 'r') as f:
                             results = json.load(f)
+                            
+                            # Handle different formats of results file
                             if model_name in results:
+                                # Standard format where model name is a direct key
                                 result = results[model_name]
                                 model_info.update({
                                     "accuracy": result.get("accuracy", 0),
@@ -280,6 +282,18 @@ def get_available_models() -> Dict[str, Dict]:
                                     "training_time": result.get("training_time", 0),
                                     "status": result.get("status", "success"),
                                     "timestamp": result.get("timestamp", "")
+                                })
+                                break
+                            elif dataset_name in results and model_name in results[dataset_name]:
+                                # Format from run function where dataset is the top-level key
+                                result = results[dataset_name][model_name]
+                                model_info.update({
+                                    "accuracy": result.get("val_accuracy", result.get("accuracy", 0)),
+                                    "cv_mean": result.get("val_accuracy", 0),
+                                    "cv_std": 0.0,
+                                    "training_time": result.get("training_time", 0),
+                                    "status": "success",
+                                    "timestamp": datetime.now().isoformat()
                                 })
                                 break
                     except Exception as e:
@@ -502,31 +516,6 @@ async def list_datasets():
     except Exception as e:
         logger.error(f"Error listando datasets: {e}")
         raise HTTPException(status_code=500, detail=f"Error listando datasets: {str(e)}")
-
-
-@app.get("/algorithms", summary="Algoritmos disponibles")
-async def list_algorithms():
-    """Lista los algoritmos de ML disponibles para entrenamiento"""
-    try:
-        trainer = get_trainer()
-        models = trainer.get_available_models()
-        
-        algorithm_info = {}
-        for name, model in models.items():
-            algorithm_info[name] = {
-                "name": name,
-                "type": type(model).__name__,
-                "parameters": model.get_params()
-            }
-        
-        return {
-            "total_algorithms": len(algorithm_info),
-            "algorithms": algorithm_info
-        }
-        
-    except Exception as e:
-        logger.error(f"Error listando algoritmos: {e}")
-        raise HTTPException(status_code=500, detail=f"Error listando algoritmos: {str(e)}")
 
 
 @app.delete("/models/{model_name}", summary="Eliminar modelo", response_model=None)

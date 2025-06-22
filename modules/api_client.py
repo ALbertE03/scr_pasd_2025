@@ -332,7 +332,7 @@ def show_model_details(api_client: APIClient, model_name: str):
         col1, col2 = st.columns(2)
         
         with col1:
-            st.json({
+            st.dataframe({
                 "Nombre": model_info.get("model_name"),
                 "Dataset": model_info.get("dataset"),
                 "Tipo": model_info.get("model_type", "N/A"),
@@ -341,7 +341,7 @@ def show_model_details(api_client: APIClient, model_name: str):
             })
         
         with col2:
-            st.json({
+            st.dataframe({
                 "Accuracy": model_info.get("accuracy"),
                 "CV Mean": model_info.get("cv_mean"),
                 "CV Std": model_info.get("cv_std"),
@@ -665,14 +665,11 @@ def render_inference_stats_tab(api_client: APIClient):
             with col4:
                 accuracy = agg.get("accuracy")
                 st.metric("Accuracy", f"{accuracy:.4f}" if accuracy else "N/A")
-    
-
-    st.subheader("Evolución Temporal")
+        st.subheader("Evolución Temporal")
     
     col1, col2 = st.columns(2)
     
     with col1:
-
         if selected_model == "Todos":
             fig = go.Figure()
             for model_name, entries in raw_stats.items():
@@ -714,58 +711,136 @@ def render_inference_stats_tab(api_client: APIClient):
                     yaxis_title="Tiempo de Predicción (s)"
                 )
             else:
-                fig = go.Figure()
+                fig = go.Figure()               
                 fig.add_annotation(text="No hay datos disponibles", x=0.5, y=0.5)
         
         st.plotly_chart(fig, use_container_width=True)
     
     with col2:
         if selected_model == "Todos":
+            # Create a cumulative predictions chart
             fig = go.Figure()
             for model_name, entries in raw_stats.items():
                 if entries:
-                    timestamps = [datetime.fromisoformat(entry["timestamp"]) for entry in entries]
-                    n_samples = [entry["n_samples"] for entry in entries]
+                    # Sort entries by timestamp
+                    sorted_entries = sorted(entries, key=lambda x: datetime.fromisoformat(x["timestamp"]))
+                    timestamps = [datetime.fromisoformat(entry["timestamp"]) for entry in sorted_entries]
+                    
+                    # Calculate cumulative predictions
+                    cumulative_predictions = []
+                    running_total = 0
+                    for entry in sorted_entries:
+                        running_total += 1  # Count each prediction event
+                        cumulative_predictions.append(running_total)
+                    
                     fig.add_trace(go.Scatter(
                         x=timestamps,
-                        y=n_samples,
-                        mode='lines+markers',
+                        y=cumulative_predictions,
+                        mode='lines',
                         name=model_name,
                         line=dict(width=2),
-                        marker=dict(size=4)
                     ))
             fig.update_layout(
-                title="Muestras Procesadas por Modelo",
+                title="Predicciones Acumuladas por Modelo",
                 xaxis_title="Tiempo",
-                yaxis_title="Número de Muestras",
+                yaxis_title="Total Predicciones",
                 hovermode='x unified'
             )
         else:
             if selected_model in raw_stats and raw_stats[selected_model]:
                 entries = raw_stats[selected_model]
-                timestamps = [datetime.fromisoformat(entry["timestamp"]) for entry in entries]
-                n_samples = [entry["n_samples"] for entry in entries]
+                # Sort entries by timestamp
+                sorted_entries = sorted(entries, key=lambda x: datetime.fromisoformat(x["timestamp"]))
+                timestamps = [datetime.fromisoformat(entry["timestamp"]) for entry in sorted_entries]
+                
+                # Calculate cumulative predictions and samples
+                cumulative_predictions = []
+                cumulative_samples = []
+                running_pred_total = 0
+                running_sample_total = 0
+                
+                for entry in sorted_entries:
+                    running_pred_total += 1  # Count each prediction event
+                    running_sample_total += entry["n_samples"]
+                    cumulative_predictions.append(running_pred_total)
+                    cumulative_samples.append(running_sample_total)
                 
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(
                     x=timestamps,
-                    y=n_samples,
-                    mode='lines+markers',
-                    name=f"Muestras - {selected_model}",
-                    line=dict(width=2),
-                    marker=dict(size=6)
+                    y=cumulative_predictions,
+                    mode='lines',
+                    name="Predicciones",
+                    line=dict(width=2, color='blue'),
                 ))
+                
+                fig.add_trace(go.Scatter(
+                    x=timestamps,
+                    y=cumulative_samples,
+                    mode='lines',
+                    name="Muestras",
+                    line=dict(width=2, color='red', dash='dash'),
+                ))
+                
                 fig.update_layout(
-                    title=f"Muestras Procesadas - {selected_model}",
+                    title=f"Predicciones y Muestras Acumuladas - {selected_model}",
                     xaxis_title="Tiempo",
-                    yaxis_title="Número de Muestras"
+                    yaxis_title="Total",
+                    legend=dict(orientation="h")
                 )
             else:
                 fig = go.Figure()
                 fig.add_annotation(text="No hay datos disponibles", x=0.5, y=0.5)
-        
         st.plotly_chart(fig, use_container_width=True)
-
+    
+    # Add a bubble chart showing model efficiency
+    if selected_model == "Todos" and aggregated_stats:
+        st.subheader("Comparativa de Modelos")
+        
+        bubble_data = []
+        for model_name, agg in aggregated_stats.items():
+            total_predictions = agg.get("total_predictions", 0)
+            avg_time = agg.get("avg_prediction_time", 0)
+            total_samples = agg.get("total_samples", 0)
+            accuracy = agg.get("accuracy", 0) or 0
+            
+            if total_predictions > 0:
+                bubble_data.append({
+                    "Modelo": model_name,
+                    "Tiempo Promedio (s)": avg_time,
+                    "Total Predicciones": total_predictions,
+                    "Accuracy": accuracy,
+                    "Muestras": total_samples
+                })
+        
+        if bubble_data:
+            df_bubble = pd.DataFrame(bubble_data)
+            
+            fig = px.scatter(
+                df_bubble,
+                x="Tiempo Promedio (s)",
+                y="Accuracy", 
+                size="Total Predicciones",
+                color="Modelo",
+                hover_name="Modelo",
+                text="Modelo",
+                size_max=60,
+                title="Comparativa de Eficiencia y Precisión entre Modelos",
+            )
+            
+            fig.update_layout(
+                xaxis_title="Tiempo Promedio de Predicción (s)",
+                yaxis_title="Accuracy",
+                height=500,
+            )
+            
+            fig.update_traces(
+                textposition='top center',
+                marker=dict(line=dict(width=2, color='DarkSlateGrey'))
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+    
     st.subheader("Estadísticas Detalladas por Modelo")
     if aggregated_stats:
         table_data = []

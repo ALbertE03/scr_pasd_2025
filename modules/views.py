@@ -19,6 +19,7 @@ from .utils import save_system_metrics_history, get_metrics_for_timeframe
 from typing import List, Dict, Tuple
 from sklearn.metrics import log_loss, accuracy_score
 from sklearn.model_selection import train_test_split
+from datetime import datetime
 from train import DistributedMLTrainer
 import json 
 import pickle
@@ -599,9 +600,23 @@ def run(datasets:List, models:List, hyperparameters:Dict)->Tuple:
                                 else:
                                     st.warning("No hay datos de matrices de confusión disponibles para este modelo")
                             o+=1
-                o+=1
-    
+                o+=1    
     for _i,j,k in _models:
+        results_filename = os.path.join("training_results", f"results_{k}.json")
+        with open(results_filename, 'w') as f:
+            json_results = {}
+            for model_name in results.get(k, {}).keys():
+                metrics = results[k][model_name]
+                json_results[model_name] = {
+                    "accuracy": metrics.get("val_accuracy", metrics.get("accuracy", 0)),
+                    "training_time": metrics.get("training_time", 0),
+                    "cv_mean": metrics.get("val_accuracy", 0),
+                    "cv_std": 0.0,
+                    "timestamp": datetime.now().isoformat(),
+                    "status": "success"
+                }
+            json.dump(json_results, f)
+        
         history_filename = os.path.join("training_results", f"training_history_{k}.json")
         with open(history_filename, 'w') as f:
             json_history = {}
@@ -610,10 +625,12 @@ def run(datasets:List, models:List, hyperparameters:Dict)->Tuple:
                         _k: _v for _k, _v in data.items() 
                         if isinstance(_v, (list, dict, str, int, float)) or _v is None
                     }
+            
             json.dump(json_history, f)
+            
         models_directory = os.path.join("training_results", f"models_{k}")
         model_filename = os.path.join(models_directory, f"{j}.pkl")
-        os.makedirs(models_directory,exist_ok=True)
+        os.makedirs(models_directory, exist_ok=True)
         with open(model_filename, 'wb') as f:
                 pickle.dump(_i, f)
     return results, training_history
