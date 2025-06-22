@@ -22,7 +22,8 @@ def get_unique_key(base_key):
 
 def initialize_session_state():
     """Inicializa todas las variables de session_state necesarias"""
-    
+    if 'data_test_size' not in st.session_state:
+        st.session_state.data_test_size = {}
     if 'training_results' not in st.session_state:
         st.session_state.training_results = None
     if 'sequential_results' not in st.session_state:

@@ -8,49 +8,8 @@ from .training import (
     run_distributed_training_advanced
 )
 from .utils import save_system_metrics_history, get_metrics_for_timeframe
-
-
-def render_training_tab(cluster_status):
-    """Renderiza la pestaña de entrenamiento con capacidades avanzadas"""
-    st.header("🧠 Entrenamiento Distribuido")
-    
-    if not cluster_status['connected']:
-        st.warning("Debes conectarte al cluster para ejecutar entrenamientos")
-        return
-    
-    training_tabs = st.tabs([
-        "🚀 Entrenamiento Avanzado",
-    ])
-    
-    with training_tabs[0]:
-        render_advanced_training(cluster_status)
-        
-
-        
-def render_advanced_training(cluster_status):
-    """Renderiza la interfaz de entrenamiento avanzado"""
-    st.subheader("🚀 Entrenamiento Distribuido Avanzado")
-    
-    st.markdown("""
-    <div class="success-card">
-        <h4>✅ Procesamiento de múltiples modelos en paralelo</h4>
-        <p>Entrene varios modelos simultáneamente aprovechando la potencia del cluster distribuido</p>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    col1, col2 = st.columns([3, 2])
-    
-    with col1:
-        datasets = ['iris', 'wine', 'breast_cancer', 'digits']
-        selected_dataset = st.selectbox(
-            "Dataset",
-            options=datasets,
-            index=datasets.index(st.session_state.current_dataset) if st.session_state.current_dataset in datasets else 0,
-            key="advanced_dataset_select"
-        )
-        st.session_state.current_dataset = selected_dataset
-        
-        model_options = [
+from typing import List,Dict,Tuple
+model_options = [
             # Modelos basados en árboles
             "RandomForest", 
             "GradientBoosting", 
@@ -88,6 +47,339 @@ def render_advanced_training(cluster_status):
             "Bagging",
             "Voting"
         ]
+def render_training_tab(cluster_status):
+    """Renderiza la pestaña de entrenamiento con capacidades avanzadas"""
+    st.header("🧠 Entrenamiento Distribuido")
+    
+    if not cluster_status['connected']:
+        st.warning("Debes conectarte al cluster para ejecutar entrenamientos")
+        return
+    
+    training_tabs = st.tabs([
+        "🚀 Entrenamiento",
+        "🚀Entrenamiento Avanzado"
+    ])
+    
+    with training_tabs[0]:
+        render_advanced_training(cluster_status)
+    
+    with training_tabs[1]:
+        render(cluster_status)
+
+
+def render(cluster_status):
+    st.subheader("🚀 Entrenamiento Distribuido Avanzado")
+    col1, col2 = st.columns([3, 2])
+    with col1:
+        datasets = ['iris', 'wine', 'breast_cancer', 'digits']
+        selected_dataset = st.multiselect(
+            "Dataset",
+            options=datasets,
+            default=datasets[:2],
+            key="advanced_dataset_select_pro"
+        )
+        st.session_state.current_dataset = selected_dataset
+        for  i in selected_dataset:
+            st.session_state.data_test_size[i]=0.3
+            
+    
+        selected_models = st.multiselect(
+            "Modelos a entrenar en paralelo",
+            options=model_options,
+            default=st.session_state.selected_models[:4] if hasattr(st.session_state, 'selected_models') else model_options[:4],
+            key="advanced_models_multiselect_pro"
+        )
+        
+        st.session_state.selected_models = selected_models
+    with col2:
+        r = st.selectbox('',options=selected_dataset,key='SCR',help='por defecto todos son 0.3')
+        d = datasets[datasets.index(r)]
+        st.session_state.data_test_size[d]= st.slider(
+            "% Datos de prueba",
+            min_value=0.1,
+            max_value=0.5,
+            value=st.session_state.test_size,
+            step=0.05,
+            key="advanced_test_size_slider_pro"
+        )
+    with st.expander("⚙️ Configuración de Hiperparámetros"):
+        st.caption("Configure hiperparámetros específicos para cada modelo seleccionado")
+        
+        hyperparams = {}
+        
+        for model in selected_models:
+            st.subheader(f"{model}")
+            cols = st.columns(3)
+            
+            if model == "RandomForest":
+                hyperparams[model] = {
+                    "n_estimators": cols[0].slider(f"Número de árboles ({model})", 10, 200, 100, 10,key='1'),
+                    "max_depth": cols[1].slider(f"Profundidad máxima ({model})", 2, 20, 10, 1,key='2'),
+                    "min_samples_split": cols[2].slider(f"Min muestras para split ({model})", 2, 10, 2, 1,key='3')
+                }
+            elif model == "GradientBoosting":
+                hyperparams[model] = {
+                    "n_estimators": cols[0].slider(f"Número de estimadores ({model})", 10, 200, 100, 10,key='4'),
+                    "learning_rate": cols[1].slider(f"Tasa de aprendizaje ({model})", 0.01, 0.3, 0.1, 0.01,key='5'),
+                    "max_depth": cols[2].slider(f"Profundidad máxima ({model})", 2, 10, 3, 1,key='6')
+                }
+            elif model == "SVM":
+                hyperparams[model] = {
+                    "C": cols[0].slider(f"Parámetro C ({model})", 0.1, 10.0, 1.0, 0.1,key='7'),
+                    "kernel": cols[1].selectbox(f"Kernel ({model})", ["linear", "rbf", "poly"], 1,key='8'),
+                    "gamma": cols[2].selectbox(f"Gamma ({model})", ["scale", "auto"], 0,key='9')
+                }
+            elif model == "LogisticRegression":
+                hyperparams[model] = {
+                    "C": cols[0].slider(f"Parámetro C ({model})", 0.1, 10.0, 1.0, 0.1,key='10'),
+                    "max_iter": cols[1].slider(f"Max iteraciones ({model})", 100, 1000, 100, 100,key='11'),
+                    "solver": cols[2].selectbox(f"Solver ({model})", ["lbfgs", "liblinear", "newton-cg"], 0,key='12')
+                }            
+            elif model == "AdaBoost":
+                hyperparams[model] = {
+                    "n_estimators": cols[0].slider(f"Número de estimadores ({model})", 50, 200, 100, 10,key='13'),
+                    "learning_rate": cols[1].slider(f"Tasa de aprendizaje ({model})", 0.01, 1.0, 0.1, 0.01,key='14'),
+                    "algorithm": cols[2].selectbox(f"Algoritmo ({model})", ["SAMME"], 0,key='15')
+                }
+            elif model == "ExtraTrees":
+                hyperparams[model] = {
+                    "n_estimators": cols[0].slider(f"Número de árboles ({model})", 10, 200, 100, 10,key='16'),
+                    "max_depth": cols[1].slider(f"Profundidad máxima ({model})", 2, 20, 10, 1,key='17'),
+                    "min_samples_split": cols[2].slider(f"Min muestras para split ({model})", 2, 10, 2, 1,key='18')
+                }
+            elif model == "KNN":
+                hyperparams[model] = {
+                    "n_neighbors": cols[0].slider(f"Número de vecinos ({model})", 1, 20, 5, 1,key='19'),
+                    "weights": cols[1].selectbox(f"Pesos ({model})", ["uniform", "distance"], 0,key='20'),
+                    "algorithm": cols[2].selectbox(f"Algoritmo ({model})", ["auto", "ball_tree", "kd_tree", "brute"], 0,key='21')
+                }
+            elif model == "DecisionTree":
+                hyperparams[model] = {
+                    "max_depth": cols[0].slider(f"Profundidad máxima ({model})", 2, 20, 10, 1,key='22'),
+                    "min_samples_split": cols[1].slider(f"Min muestras para split ({model})", 2, 10, 2, 1,key='23'),
+                    "criterion": cols[2].selectbox(f"Criterio ({model})", ["gini", "entropy"], 0,key='24')
+                }
+            elif model == "SGD":
+                hyperparams[model] = {
+                    "alpha": cols[0].slider(f"Alpha ({model})", 0.0001, 0.1, 0.0001, 0.0001, format="%.4f",key='25'),
+                    "max_iter": cols[1].slider(f"Max iteraciones ({model})", 100, 2000, 1000, 100),
+                    "loss": cols[2].selectbox(f"Función de pérdida ({model})", ["hinge", "log_loss", "modified_huber"], 1,key='26')
+                }           
+            elif model == "PassiveAggressive":
+                hyperparams[model] = {
+                    "C": cols[0].slider(f"Parámetro C ({model})", 0.1, 10.0, 1.0, 0.1,key='27'),
+                    "max_iter": cols[1].slider(f"Max iteraciones ({model})", 100, 1000, 1000, 100,key='28'),
+                    "tol": cols[2].slider(f"Tolerancia ({model})", 1e-5, 1e-2, 1e-3, format="%.5f",key='29')
+                }
+            elif model == "LinearSVM":
+                hyperparams[model] = {
+                    "C": cols[0].slider(f"Parámetro C ({model})", 0.1, 10.0, 1.0, 0.1,key='30'),
+                    "max_iter": cols[1].slider(f"Max iteraciones ({model})", 100, 1000, 1000, 100,key='31'),
+                    "tol": cols[2].slider(f"Tolerancia ({model})", 1e-5, 1e-2, 1e-3, format="%.5f",key='32')
+                }
+            elif model == "GaussianNB":
+                hyperparams[model] = {
+                    "var_smoothing": cols[0].slider(f"Suavizado de varianza ({model})", 1e-12, 1e-6, 1e-9, format="%.2e",key='33')
+                }
+            elif model == "BernoulliNB":
+                hyperparams[model] = {
+                    "alpha": cols[0].slider(f"Alpha ({model})", 0.01, 2.0, 1.0, 0.01,key='34'),
+                    "fit_prior": cols[1].checkbox(f"Ajustar prior ({model})", True,key='35')
+                }
+            elif model == "MultinomialNB":
+                hyperparams[model] = {
+                    "alpha": cols[0].slider(f"Alpha ({model})", 0.01, 2.0, 1.0, 0.01,key='36'),
+                    "fit_prior": cols[1].checkbox(f"Ajustar prior ({model})", True,key='37')
+                }
+            elif model == "ComplementNB":
+                hyperparams[model] = {
+                    "alpha": cols[0].slider(f"Alpha ({model})", 0.01, 2.0, 1.0, 0.01,key='38'),
+                    "fit_prior": cols[1].checkbox(f"Ajustar prior ({model})", True,key='39')
+                }
+            elif model == "LDA":
+                hyperparams[model] = {
+                    "solver": cols[0].selectbox(f"Solver ({model})", ["svd", "lsqr", "eigen"], 0,key='40'),
+                    "shrinkage": cols[1].slider(f"Shrinkage ({model})", None, 1.0, None,key='41') if cols[1].checkbox(f"Usar shrinkage ({model})", False,key='42') else None
+                }
+            elif model == "QDA":
+                hyperparams[model] = {
+                    "reg_param": cols[0].slider(f"Parámetro de regularización ({model})", 0.0, 1.0, 0.0, 0.01,key='43')
+                }
+            elif model == "MLP":
+                hyperparams[model] = {
+                    "hidden_layer_sizes": (cols[0].slider(f"Neuronas capa oculta ({model})", 10, 200, 100, 10,key='44')),
+                    "activation": cols[1].selectbox(f"Activación ({model})", ["relu", "tanh", "logistic"], 0,key='45'),
+                    "max_iter": cols[2].slider(f"Max iteraciones ({model})", 100, 500, 200, 50,key='46')
+                }
+            elif model == "Bagging":
+                hyperparams[model] = {
+                    "n_estimators": cols[0].slider(f"Número de estimadores ({model})", 5, 50, 10, 5,key='47'),
+                    "max_samples": cols[1].slider(f"Max muestras ({model})", 0.1, 1.0, 1.0, 0.1,key='48'),
+                    "bootstrap": cols[2].checkbox(f"Bootstrap ({model})", True,key='49')
+                }
+            elif model == "Voting":
+                hyperparams[model] = {
+                    "voting": cols[0].selectbox(f"Tipo de votación ({model})", ["hard", "soft"], 1,key='50')
+                }
+                
+    co1, co2, co3 = st.columns([1,2,1])
+    with co2:
+        start_training = st.button(
+            "🚀 Iniciar Entrenamiento Distribuido (varios dataset secuenciales)", 
+            type="primary",
+            key="advanced_start_training_button_pro",
+        )
+    
+    results_container = st.container()
+    if start_training:
+        with results_container:
+            st.session_state.training_in_progress = True
+            
+            st.markdown("""
+            <div class="dashboard-container">                
+                        <h3>🔄 Entrenando Modelos en Paralelo</h3>
+            </div>
+            """, unsafe_allow_html=True)
+            results, training_history = run(
+                datasets=selected_dataset,
+                models=selected_models,
+                hyperparameters=hyperparams
+            )
+            st.session_state.training_in_progress = False
+def run(datasets:List,models:List,hyperparameters:Dict)->Tuple:
+    """
+    Entrena múltiples datasets secuencialmente en una misma ejecución utilizando Ray para distribución
+    
+    Args:
+        datasets: Lista de nombres de datasets a entrenar secuencialmente
+        models: Lista de modelos a entrenar para cada dataset
+        hyperparameters: Diccionario de hiperparámetros para cada modelo
+        
+    Returns:
+        Tuple con los resultados y el historial de entrenamiento
+    """
+    results = {}
+    training_history = {}
+
+    status_container = st.empty()
+    status_container.info("🔄 Iniciando entrenamiento secuencial...")
+    
+    progress = st.progress(0)
+    dataset_count = len(datasets)
+    
+    for idx, dataset in enumerate(datasets):
+        progress_value = (idx / dataset_count) * 100
+        progress.progress(int(progress_value))
+        status_container.info(f"🔄 Procesando dataset {idx+1}/{dataset_count}: {dataset}")
+        
+        try:
+            def update_progress(progress_value, status_msg):
+                pass 
+            
+            dataset_results, dataset_history = run_distributed_training_advanced(
+                dataset_name=dataset,
+                selected_models=models,
+                hyperparameters=hyperparameters,
+                enable_fault_tolerance=True,
+                progress_callback=update_progress,
+                data_size=st.session_state.data_test_size[dataset]
+            )
+            
+            if dataset_results:
+                results[dataset] = dataset_results
+                training_history[dataset] = dataset_history
+            
+        except Exception as e:
+            st.error(f"Error al procesar {dataset}: {str(e)}")
+    
+    progress.progress(100)
+    status_container.success("✅ Entrenamiento completado")
+    
+    if len(results) > 0:
+        st.subheader("📊 Comparación entre Datasets")
+
+        st.markdown("### 📈 Rendimiento del mismo modelo en diferentes datasets")
+
+        comparison_data = []
+        for dataset_name, dataset_results in results.items():
+            for model_name, metrics in dataset_results.items():
+                comparison_data.append({
+                    'Dataset': dataset_name,
+                    'Modelo': model_name,
+                    'Accuracy': metrics.get('accuracy', 0),
+                    'Tiempo (s)': metrics.get('training_time', 0),
+                    'CV Score': metrics.get('cv_mean', 0)
+                })
+        
+        if len(comparison_data) > 0:
+            df_comparison = pd.DataFrame(comparison_data)
+
+            fig_models = px.bar(
+                df_comparison,
+                x="Modelo", 
+                y="Accuracy",
+                color="Dataset",
+                barmode="group",
+                title="Comparación de Accuracy por Modelo entre Datasets",
+                height=500,
+                color_discrete_sequence=px.colors.qualitative.Bold
+            )
+            fig_models.update_layout(
+                xaxis_tickangle=-45,
+                plot_bgcolor='rgba(0,0,0,0)',
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                margin=dict(l=20, r=20, t=60, b=80)
+            )
+            st.plotly_chart(fig_models, use_container_width=True)
+            
+            fig_time = px.scatter(
+                df_comparison, 
+                x="Tiempo (s)", 
+                y="Accuracy", 
+                color="Dataset", 
+                size="CV Score",
+                hover_data=["Modelo"],
+                title="Tiempo de Entrenamiento vs Accuracy por Dataset",
+                height=500
+            )
+            fig_time.update_layout(
+                plot_bgcolor='rgba(0,0,0,0)',
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+            )
+            st.plotly_chart(fig_time, use_container_width=True)
+            
+            st.markdown("### 🔍 Análisis por Dataset")
+            dataset_tabs = st.tabs([f"Dataset: {dataset}" for dataset in results.keys()])
+            
+            for i, (dataset, tab) in enumerate(zip(results.keys(), dataset_tabs)):
+                with tab:
+                    if dataset in training_history:
+                        st.markdown(f"#### Métricas de entrenamiento: {dataset}")
+                        plot_training_metrics(training_history[dataset], chart_prefix=f"tab_{i}")
+    
+    return results, training_history
+def render_advanced_training(cluster_status):
+    """Renderiza la interfaz de entrenamiento """
+    st.subheader("🚀 Entrenamiento Distribuido ")
+    
+    st.markdown("""
+    <div class="success-card">
+        <h4>✅ Procesamiento de múltiples modelos en paralelo</h4>
+        <p>Entrene varios modelos simultáneamente aprovechando la potencia del cluster distribuido</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    col1, col2 = st.columns([3, 2])
+    
+    with col1:
+        datasets = ['iris', 'wine', 'breast_cancer', 'digits']
+        selected_dataset = st.selectbox(
+            "Dataset",
+            options=datasets,
+            index=datasets.index(st.session_state.current_dataset) if st.session_state.current_dataset in datasets else 0,
+            key="advanced_dataset_select"
+        )
+        st.session_state.current_dataset = selected_dataset
         
         selected_models = st.multiselect(
             "Modelos a entrenar en paralelo",

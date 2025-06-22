@@ -184,7 +184,7 @@ def plot_cross_dataset_comparison(all_results):
     st.plotly_chart(fig2, use_container_width=True, key="cross_dataset_best_models")
 
 
-def run_distributed_training_advanced(dataset_name, selected_models, hyperparameters=None, enable_fault_tolerance=True, progress_callback=None):
+def run_distributed_training_advanced(dataset_name, selected_models, hyperparameters=None, enable_fault_tolerance=True, progress_callback=None,data_size=None):
     """
     Ejecuta entrenamiento distribuido avanzado con monitoreo en tiempo real utilizando Ray
     
@@ -306,11 +306,11 @@ def run_distributed_training_advanced(dataset_name, selected_models, hyperparame
             }
         
         @ray.remote(num_cpus=1,max_retries=3, retry_exceptions=True)
-        def train_model_with_tracking(model, model_name, X, y, fold_idx, total_folds):
+        def train_model_with_tracking(model, model_name, X, y, fold_idx, total_folds,d):
             """Función remota para entrenar un modelo y rastrear su progreso"""      
             try:
 
-                X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=fold_idx)
+                X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=d if d else st.session_state.test_size, random_state=fold_idx)
 
                 model.fit(X_train, y_train)
 
@@ -380,7 +380,7 @@ def run_distributed_training_advanced(dataset_name, selected_models, hyperparame
                 node_idx = i % len(alive_nodes)
                 node_id = alive_nodes[node_idx]['NodeID']
                 training_history[model_name]['node_assignment'] = node_id
-                task = train_model_with_tracking.options(num_cpus=1,max_retries=3, retry_exceptions=True).remote(model, model_name, X, y, 0, 1)
+                task = train_model_with_tracking.options(num_cpus=1,max_retries=3, retry_exceptions=True).remote(model, model_name, X, y, 0, 1,data_size)
                 
                 tasks.append(task)
                 task_mapping[task] = (model_name, 0)  
@@ -393,6 +393,7 @@ def run_distributed_training_advanced(dataset_name, selected_models, hyperparame
             for model_name, model in models_to_train.items():
                 task = train_model_with_tracking.remote(model, model_name, X, y, 0, 1)
                 task_mapping[task] = (model_name, 0)  
+                tasks.append(task)
 
         while tasks:
 
