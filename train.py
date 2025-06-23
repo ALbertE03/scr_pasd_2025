@@ -38,16 +38,16 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-@ray.remote
+@ray.remote(num_cpus=1, max_retries=3, retry_exceptions=True,scheduling_strategy="SPREAD",runtime_env={"fail_fast": False },catch_exceptions=True,retry_delay_s=2.0)
 def iris():
     return load_iris()
-@ray.remote
+@ray.remote(num_cpus=1, max_retries=3, retry_exceptions=True,scheduling_strategy="SPREAD",runtime_env={"fail_fast": False },catch_exceptions=True,retry_delay_s=2.0)
 def wine():
     return load_wine()
-@ray.remote
+@ray.remote(num_cpus=1, max_retries=3, retry_exceptions=True,scheduling_strategy="SPREAD",runtime_env={"fail_fast": False },catch_exceptions=True,retry_delay_s=2.0)
 def breast_cancer():
     return load_breast_cancer()
-@ray.remote
+@ray.remote(num_cpus=1, max_retries=3, retry_exceptions=True,scheduling_strategy="SPREAD",runtime_env={"fail_fast": False },catch_exceptions=True,retry_delay_s=2.0)
 def digits():
     return load_digits()
 

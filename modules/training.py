@@ -289,7 +289,7 @@ def run_distributed_training_advanced(dataset_name, selected_models, hyperparame
                 "node_assignment": None
             }
         
-        @ray.remote(num_cpus=1,max_retries=3, retry_exceptions=True)
+        @ray.remote(num_cpus=1, max_retries=3, retry_exceptions=True,scheduling_strategy="SPREAD",runtime_env={"fail_fast": False },catch_exceptions=True,retry_delay_s=2.0)
         def train_model_with_tracking(model, model_name, X, y, fold_idx,d):
             """Función remota para entrenar un modelo y rastrear su progreso"""      
             try:

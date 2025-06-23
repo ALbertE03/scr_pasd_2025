@@ -343,7 +343,8 @@ def run(datasets:List, models:List, hyperparameters:Dict)->Tuple:
                     if hasattr(base_model, param):
                         setattr(base_model, param, value)
             models_to_train[model_name] = base_model
-    @ray.remote(num_cpus=1, max_retries=3, retry_exceptions=True)
+  
+    @ray.remote(num_cpus=1, max_retries=3, retry_exceptions=True,scheduling_strategy="SPREAD",runtime_env={"fail_fast": False },catch_exceptions=True,retry_delay_s=2.0)
     def train_model_for_dataset(model, model_name, dataset_ref, dataset_name, data_size=None):
         """Función remota para entrenar un modelo en un dataset específico"""
         try:
