@@ -7,7 +7,7 @@ from typing import Dict, List
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
-
+import numpy as np 
 def get_api_base_url():
     if os.environ.get('API_BASE_URL'):
         return os.environ.get('API_BASE_URL')
@@ -192,6 +192,83 @@ class APIClient:
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
+    def predict_concurrent(self, model_name: str, features_list: List[List[List[float]]], return_probabilities: bool = False) -> Dict:
+        """Realiza múltiples predicciones concurrentes usando un modelo
+        
+        Args:
+            model_name: Nombre del modelo a utilizar
+            features_list: Lista de lotes de características (cada lote es una lista de muestras)
+            return_probabilities: Si se deben devolver las probabilidades
+            
+        Returns:
+            Diccionario con los resultados de todas las predicciones
+        """
+        import concurrent.futures
+        
+        try:
+            results = []
+            errors = []
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                futures = []
+                for features_batch in features_list:
+                    payload = {
+                        "model_name": model_name,
+                        "features": features_batch,
+                        "return_probabilities": return_probabilities
+                    }
+                    
+                    future = executor.submit(
+                        self.session.post,
+                        f"{self.base_url}/predict",
+                        json=payload,
+                        timeout=30
+                    )
+                    futures.append(future)
+
+                for future in concurrent.futures.as_completed(futures):
+                    try:
+                        response = future.result()
+                        response.raise_for_status()
+                        results.append(response.json())
+                    except Exception as e:
+                        errors.append(str(e))
+            
+            if not results:
+                return {"status": "error", "error": f"Todos los intentos fallaron: {errors}"}
+            
+
+            combined_results = {
+                "predictions": [],
+                "prediction_time": 0,
+                "feature_count": 0,
+                "n_samples": 0
+            }
+            
+            if return_probabilities:
+                combined_results["probabilities"] = []
+            
+            for result in results:
+                if "predictions" in result:
+                    combined_results["predictions"].extend(result["predictions"])
+                    combined_results["prediction_time"] += result.get("prediction_time", 0)
+                    combined_results["feature_count"] += result.get("feature_count", 0)
+                    combined_results["n_samples"] += result.get("n_samples", len(result["predictions"]))
+                    
+                    if return_probabilities and "probabilities" in result:
+                        combined_results["probabilities"].extend(result["probabilities"])
+            
+            if results:
+                combined_results["avg_prediction_time"] = combined_results["prediction_time"] / len(results)
+                combined_results["avg_time_per_sample"] = (
+                    combined_results["prediction_time"] / combined_results["n_samples"] 
+                    if combined_results["n_samples"] > 0 else 0
+                )
+                        
+            return {"status": "success", "data": combined_results}
+        except Exception as e:
+            return {"status": "error", "error": f"Error en predicción concurrente: {str(e)}"}
+
 
 def render_api_tab():
     """Renderiza la pestaña de API"""
@@ -363,20 +440,23 @@ def render_predictions_tab(api_client: APIClient):
         st.error(f"Error obteniendo modelos: {models_response['error']}")
         return
     
-    models = models_response["data"].get("models", {})
+    models = models_response["data"].get("models", {})    
     if not models:
         st.warning("No hay modelos disponibles para hacer predicciones.")
         return
-    
+        
     model_names = list(models.keys())
     
-    prediction_tabs = st.tabs(["📝 Predicción Individual"])#"📁 Predicción en Lote"])
+    prediction_tabs = st.tabs(["📝 Predicción Individual", "🚀 Predicciones Concurrentes"])#, "📁 Predicción en Lote"])
     
     with prediction_tabs[0]:
         render_individual_prediction(api_client, model_names, models)
     
-    #with prediction_tabs[1]:
-     #   render_batch_prediction(api_client, model_names)
+    with prediction_tabs[1]:
+        render_concurrent_predictions(api_client, model_names, models)
+    
+    #with prediction_tabs[2]:
+        #render_batch_prediction(api_client, model_names)
 
 
 
@@ -905,4 +985,186 @@ def delete_model_confirm(api_client: APIClient, model_name: str):
     with col2:
         if st.button("❌ Cancelar", key=f"no_{model_name}"):
             st.info("Eliminación cancelada")
+
+def render_concurrent_predictions(api_client: APIClient, model_names: List[str], models: Dict):
+    """Renderiza la interfaz para predicciones concurrentes"""
+    st.subheader("🚀 Predicciones Concurrentes")
+    
+    st.markdown("""
+    <div style="background-color: rgba(0, 180, 216, 0.1); padding: 15px; border-radius: 5px; border-left: 4px solid #00b4d8;">
+        <h4 style="margin-top:0">⚡ Realizar múltiples predicciones en paralelo</h4>
+        <p>Envía varias solicitudes de predicción simultáneamente para evaluar el rendimiento y capacidad de la API.</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        selected_model = st.selectbox("Seleccionar Modelo", model_names, key="concurrent_model")
+    with col2:
+        return_probabilities = st.checkbox("Incluir Probabilidades", value=False, key="concurrent_probs")
+    
+    if selected_model:
+        model_info = models[selected_model]
+        st.info(f"Dataset: {model_info.get('dataset', 'desconocido')} | Accuracy: {model_info.get('accuracy', 0):.4f}")
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            num_requests = st.slider("Número de Solicitudes Concurrentes", 2, 50, 10, key="concurrent_requests")
+        with col2:
+            mode = st.radio(
+                "Modo de concurrencia", 
+                ["Una muestra por solicitud", "Múltiples muestras por solicitud"],
+                index=0,
+                key="concurrency_mode",
+                help="'Una muestra por solicitud' envía N solicitudes independientes cada una con un solo vector (máxima paralelización). 'Múltiples muestras por solicitud' envía N solicitudes cada una con varios vectores."
+            )
+    
+        dataset = model_info.get('dataset', 'iris')
+        if dataset == 'iris':
+            sample_vector = [5.84, 3.05, 3.76, 1.20]
+        elif dataset == 'breast_cancer':
+            
+            sample_vector = [14.0, 14.0, 91.0, 654.0, 0.1, 0.1, 0.1, 0.05, 0.2, 0.07] + [0.5] * 20
+        elif dataset == 'digits':
+            sample_vector = [0.0] * 64
+        else:
+            n_features = model_info.get('n_features', 4)
+            sample_vector = [1.0] * n_features
+        
+        display_features = st.slider(
+            "Número de Características",1,65,1,key='asdww')
+        sample_vector = [1.0] * display_features
+        with st.expander("Personalizar muestra base (opcional)"):
+            st.caption("Personaliza algunos valores de la muestra base que serán ligeramente variados para las predicciones concurrentes")
+            
+            cols = st.columns(2)
+            
+            for i in range(display_features):
+                with cols[i % 2]:
+                    sample_vector[i] = st.number_input(
+                        f"Característica {i+1}",
+                        value=float(sample_vector[i]),
+                        format="%.2f",
+                        step=0.1,
+                        key=f"concurrent_feature_{i}"
+                    )
+        if mode == "Una muestra por solicitud":
+            samples_per_request = 1
+            st.info(f"Se realizarán {num_requests} solicitudes simultáneas, cada una con un solo vector de características ({num_requests} muestras en total)")
+        else:
+            samples_per_request = st.slider("Muestras por Solicitud", 2, 100, 10, key="samples_per_request")
+            st.info(f"Se realizarán {num_requests} solicitudes simultáneas con {samples_per_request} muestras cada una ({num_requests * samples_per_request} muestras en total)")
+        
+        if st.button("🚀 Iniciar Predicciones Concurrentes", type="primary", key="start_concurrent"):
+            
+            features_batches = []
+            for i in range(num_requests):
+                batch = []
+                for j in range(samples_per_request):
+                    variation = np.random.uniform(0, 15, len(sample_vector))
+                    sample = [max(0, a * b) for a, b in zip(sample_vector, variation)]
+                    batch.append(sample)
+                features_batches.append(batch)
+            
+            with st.spinner(f"Procesando {num_requests * samples_per_request} predicciones concurrentes..."):
+                start_time = time.time()
+                
+                result = api_client.predict_concurrent(selected_model, features_batches, return_probabilities)
+                
+                end_time = time.time()
+                total_time = end_time - start_time
+                
+                if result["status"] == "error":
+                    st.error(f"Error en predicciones concurrentes: {result['error']}")
+                else:
+                    data = result["data"]
+                    
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        st.metric("Total Muestras", data.get("n_samples", num_requests * samples_per_request))
+                    
+                    with col2:
+                        st.metric("Tiempo Total", f"{total_time:.3f}s")
+                    
+                    with col3:
+                        throughput = data.get("n_samples", 0) / max(0.001, total_time)
+                        st.metric("Rendimiento", f"{throughput:.1f} muestras/s")
+                    
+                    st.subheader("Resultados de Predicciones Concurrentes")
+
+                    total_predictions = len(data.get("predictions", []))
+                    
+                    if total_predictions > 0:
+                        from collections import Counter
+                        class_counts = Counter(data["predictions"])
+
+                        df_counts = pd.DataFrame({
+                            "Clase": list(class_counts.keys()),
+                            "Cantidad": list(class_counts.values())
+                        })
+
+                        fig = px.bar(
+                            df_counts,
+                            x="Clase",
+                            y="Cantidad",
+                            title="Distribución de Clases Predichas",
+                            color="Clase",
+                            text="Cantidad"
+                        )
+                        fig.update_layout(xaxis_title="Clase Predicha", yaxis_title="Cantidad")
+                        st.plotly_chart(fig, use_container_width=True)
+                    st.subheader("Estadísticas de Rendimiento")
+                    
+                    if mode == "Una muestra por solicitud":
+                        df_performance = pd.DataFrame({
+                            "Métrica": [
+                                "Tiempo Total de Procesamiento",
+                                "Tiempo Promedio por Predicción",
+                                "Predicciones por Segundo (Throughput)",
+                                "Paralelismo Efectivo",
+                                "Latencia Promedio"
+                            ],
+                            "Valor": [
+                                f"{total_time:.3f} s",
+                                f"{data.get('avg_prediction_time', total_time/num_requests):.3f} s",
+                                f"{num_requests/total_time:.2f}",
+                                f"{data.get('avg_prediction_time', total_time/num_requests)*num_requests/max(0.001, total_time):.2f}",
+                                f"{data.get('avg_prediction_time', total_time/num_requests):.3f} s"
+                            ]
+                        })
+                    else:
+                        df_performance = pd.DataFrame({
+                            "Métrica": [
+                                "Tiempo Total de Procesamiento",
+                                "Tiempo Promedio por Solicitud",
+                                "Tiempo Promedio por Muestra",
+                                "Solicitudes por Segundo",
+                                "Muestras por Segundo"
+                            ],
+                            "Valor": [
+                                f"{total_time:.3f} s",
+                                f"{data.get('avg_prediction_time', total_time/num_requests):.3f} s",
+                                f"{data.get('avg_time_per_sample', total_time/(num_requests*samples_per_request)):.4f} s",
+                                f"{num_requests/total_time:.2f}",
+                                f"{(num_requests*samples_per_request)/total_time:.2f}"
+                            ]
+                        })
+                    
+                    st.dataframe(df_performance, use_container_width=True)
+
+                    with st.expander("Ver muestra de predicciones"):
+                        sample_size = min(20, len(data.get("predictions", [])))
+                        sample_data = []
+                        
+                        for i in range(sample_size):
+                            row = {"#": i+1, "Predicción": data["predictions"][i]}
+                            
+                            if "probabilities" in data and i < len(data["probabilities"]):
+                                probs = data["probabilities"][i]
+                                for j, prob in enumerate(probs):
+                                    row[f"Prob. Clase {j}"] = f"{prob:.4f}"
+                            
+                            sample_data.append(row)
+                        
+                        st.dataframe(pd.DataFrame(sample_data), use_container_width=True)
 
