@@ -14,12 +14,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import uvicorn
 import psutil
-
-from train import DistributedMLTrainer
-from modules.cluster import get_cluster_status
 import ray
 
-
+import subprocess
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -362,13 +359,6 @@ async def list_models():
         logger.error(f"Error listando modelos: {e}")
         raise HTTPException(status_code=500, detail=f"Error listando modelos: {str(e)}")
 
-@app.post("/data/load",summary='carga un dataset .csv')
-async def laod_data(path:str):
-    if not path.endswith('.csv'):
-        raise HTTPException(status_code=500,details='error abriendo el archivo, tiene que ser un csv') 
-    #enviar al backend
-# tengo que crear otra para configurar parametros
-
 
 @app.get("/models/{model_name}", summary="Información de un modelo específico")
 async def get_model_info(model_name: str):
@@ -511,35 +501,7 @@ async def cluster_status():
     except Exception as e:
         logger.error(f"Error obteniendo estado del cluster: {e}")
         raise HTTPException(status_code=500, detail=f"Error obteniendo estado del cluster: {str(e)}")
-
-
-@app.get("/datasets", summary="Datasets disponibles")
-async def list_datasets():
-    """Lista los datasets disponibles para entrenamiento"""
-    try:
-        trainer = get_trainer()
-        datasets = trainer.get_available_datasets()
-        
-        dataset_info = {}
-        for name, dataset in datasets.items():
-            dataset_info[name] = {
-                "name": name,
-                "n_samples": dataset.data.shape[0],
-                "n_features": dataset.data.shape[1],
-                "n_classes": len(np.unique(dataset.target)),
-                "feature_names": getattr(dataset, 'feature_names', []).tolist() if hasattr(dataset, 'feature_names') else [],
-                "target_names": getattr(dataset, 'target_names', []).tolist() if hasattr(dataset, 'target_names') else []
-            }
-        
-        return {
-            "total_datasets": len(dataset_info),
-            "datasets": dataset_info
-        }
-        
-    except Exception as e:
-        logger.error(f"Error listando datasets: {e}")
-        raise HTTPException(status_code=500, detail=f"Error listando datasets: {str(e)}")
-
+    
 
 @app.delete("/models/{model_name}", summary="Eliminar modelo", response_model=None)
 async def delete_model(model_name: str):
@@ -803,7 +765,6 @@ async def get_inference_statistics(model_name: Optional[str] = None):
 
 @app.post("/add/node", summary="Agregar nodo al cluster Ray")
 async def add_node_to_cluster(worker_name: str = Query(..., description="Nombre del worker"), add_cpu: int = Query(..., description="CPUs para el worker")):
-    import subprocess
     """Agrega un nodo al cluster Ray (worker externo)"""
     try:
             
@@ -825,7 +786,6 @@ async def add_node_to_cluster(worker_name: str = Query(..., description="Nombre 
 @app.delete("/remove/node", summary="Eliminar nodo del cluster Ray")
 async def remove_node_from_cluster(node_name: str = Query(..., description="Nombre del worker")):
     try:
-        import subprocess
         if node_name.startswith("ray-head") or node_name == "ray-head":
             return {"success": False, "error": "No se puede eliminar el nodo principal (ray-head), ya que es necesario para el funcionamiento del cluster"}
         command = f"docker stop {node_name} && docker rm {node_name}"
@@ -843,6 +803,23 @@ async def remove_node_from_cluster(node_name: str = Query(..., description="Nomb
         logger.error(f"Excepción al eliminar nodo: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Excepción al eliminar nodo: {str(e)}")
     
+@app.get("/cluster/nodes", summary="Lista de nodos del cluster Ray")
+async def get_all_nodes_ray(command: str = Query(..., description="Comando shell para listar nodos Ray")):
+    """Obtiene la lista de nodos del cluster Ray ejecutando un comando shell"""
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            shell=True
+        )
+        if result.returncode == 0:
+            return {"success": True, "data": result.stdout.splitlines()}
+        else:
+            return {"success": False, "error": result.stderr}
+    except Exception as e:
+        logger.error(f"Excepción al obtener nodos del cluster: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Excepción al obtener nodos del cluster: {str(e)}")
 
 @app.get("/system/status", summary="Estado del sistema (host)")
 async def system_status():

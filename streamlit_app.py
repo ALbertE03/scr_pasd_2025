@@ -46,7 +46,6 @@ tab_titles = [
     "🌐 API de Modelos",
 ]
 
-tabs = st.tabs(tab_titles)
 api_client = APIClient()
 
 
@@ -65,9 +64,8 @@ else:
             "disk_free": 0,
             "disk_total": 0
         }
-    
-if 'data' not in cluster_status:
-    st.rerun()
+
+tabs = st.tabs(tab_titles) 
 with st.sidebar:
     st.title("⚙️ Configuración")
     
@@ -90,10 +88,10 @@ with st.sidebar:
     
 
 with tabs[0]:
-    render_cluster_status_tab(cluster_status,system_metrics,api_client)
+    render_cluster_status_tab(cluster_status['data'],system_metrics,api_client)
 
 with tabs[1]:
-    render_training_tab(cluster_status,api_client)
+    render_training_tab(cluster_status["data"],api_client)
 
 
 with tabs[2]:

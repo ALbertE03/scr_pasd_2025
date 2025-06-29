@@ -1,83 +1,10 @@
 import streamlit as st
 import ray
 import os
-import psutil
 import pandas as pd
 import plotly.graph_objects as go
 import time
 import subprocess
-
-@st.cache_data(ttl=30)
-def get_cluster_status():
-    try:
-        if not ray.is_initialized():
-            head_address = os.getenv('RAY_HEAD_SERVICE_HOST', 'ray-head')
-            ray.init(address=f"ray://{head_address}:10001", ignore_reinit_error=True)
-        
-        cluster_resources = ray.cluster_resources()
-        nodes = ray.nodes()
-        
-        alive_nodes = []
-        dead_nodes = []
-        for node in nodes:
-            if node.get('Alive', False):
-                alive_nodes.append(node)
-            else:
-                dead_nodes.append(node)
-        
-        resource_usage = {}
-        for node in alive_nodes:
-            node_id = node.get('NodeID', '')
-            resources = node.get('Resources', {})
-            available_resources = node.get('AvailableResources', {})
-            
-            if node_id:
-                resource_usage[node_id] = {
-                    'cpu_total': resources.get('CPU', 0),
-                    'cpu_available': available_resources.get('CPU', 0),
-                    'memory_total': resources.get('memory', 0),
-                    'memory_available': available_resources.get('memory', 0),
-                    'gpu_total': resources.get('GPU', 0) if 'GPU' in resources else 0,
-                    'gpu_available': available_resources.get('GPU', 0) if 'GPU' in available_resources else 0
-                }
-        
-        return {
-            "connected": True,
-            "resources": cluster_resources,
-            "nodes": nodes,
-            "alive_nodes": alive_nodes,
-            "dead_nodes": dead_nodes,
-            "total_cpus": cluster_resources.get('CPU', 0),
-            "total_memory": cluster_resources.get('memory', 0),
-            "total_gpus": cluster_resources.get('GPU', 0),
-            "node_count": len(nodes),
-            "alive_node_count": len(alive_nodes),
-            "dead_node_count": len(dead_nodes),
-            "resource_usage": resource_usage,
-            "timestamp": time.time()
-        }
-    except Exception as e:
-        return {
-            "connected": False,
-            "error": str(e),
-            "resources": {},
-            "nodes": [],
-            "alive_nodes": [],
-            "dead_nodes": [],
-            "total_cpus": 0,
-            "total_memory": 0,
-            "total_gpus": 0,
-            "node_count": 0,
-            "alive_node_count": 0,
-            "dead_node_count": 0,
-            "resource_usage": {},
-            "timestamp": time.time()
-        }
-
-@st.cache_data(ttl=10)
-def get_system_metrics():
-    """Obtiene métricas del sistema usando el endpoint /system/status"""
-    pass
 
 def plot_cluster_metrics(cluster_status):
     """Crea gráficos de métricas del cluster"""
@@ -318,21 +245,20 @@ def render_cluster_status_tab(cluster_status,system_metrics,api_client):
                 st.warning("Por favor ingresa un nombre para el nodo")
         
         with tab2:            
-            ray_nodes = get_all_ray_nodes()
-            
+            ray_nodes = api_client.get_all_ray_nodes()
             if not ray_nodes:
                 st.warning("No se encontraron nodos Ray para eliminar.")
                 st.info("Parece que el cluster no está en ejecución o no hay contenedores Docker detectables.")
             else:
-                st.success(f"Se encontraron {len(ray_nodes)} nodos en el cluster Ray.")
+                st.success(f"Se encontraron {len(ray_nodes['data']['data'])} nodos en el cluster Ray.")
                 
                 with st.form("remove_node_form"):
                     col1, col2 = st.columns([3, 1])
                     with col1:
                         node_to_remove = st.selectbox(
-                            "Selecciona el Nodo a Eliminar", 
-                            options=ray_nodes,
-                            key="node_to_remove", 
+                            "Selecciona el Nodo a Eliminar",
+                            options=ray_nodes['data']['data'],
+                            key="node_to_remove",
                             help="Selecciona el nodo que deseas eliminar del cluster"
                         )
                     with col2:
@@ -463,29 +389,3 @@ def remove_ray_node(node_name, api_client):
     else:
         st.error(f"Error al eliminar nodo: {response.get('error', 'Error desconocido')}")
         return False
-
-def get_all_ray_nodes():
-    """Obtiene la lista de todos los nodos Ray ejecutándose actualmente"""
-    try:
- 
-        command = "docker ps --filter 'name=ray' --format '{{.Names}}'"
-        
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            shell=True
-        )
-        
-        if result.returncode == 0:
-            node_names = result.stdout.strip().split('\n')
-            node_names = [name for name in node_names if name]
-            return node_names
-        else:
-            st.warning(f"No se pudieron listar los nodos: {result.stderr}")
-            return []
-    except Exception as e:
-        st.warning(f"Error al obtener nodos: {str(e)}")
-        return []
-
-

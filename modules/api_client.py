@@ -97,11 +97,22 @@ class APIClient:
             return {"status": "success", "data": response.json()}
         except Exception as e:
             return {"status": "error", "error": str(e)}
-        
+
+    def get_all_ray_nodes(self) -> Dict:
+        """Obtiene la lista de todos los nodos Ray ejecutándose actualmente"""
+        try:
+            params = {"command": "docker ps --filter 'name=ray' --format '{{.Names}}'"}
+            response = self.session.get(f"{self.base_url}/cluster/nodes", params=params, timeout=30)
+            response.raise_for_status()
+            return {"status": "success", "data": response.json()}
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
+
     def get_cluster_status(self) -> Dict:
         """Obtiene el estado del cluster"""
         try:
-            response = self.session.get(f"{self.base_url}/cluster/status", timeout=10)
+            response = self.session.get(f"{self.base_url}/cluster/status", timeout=30)
             response.raise_for_status()
             return {"status": "success", "data": response.json()}
         except Exception as e:
@@ -296,7 +307,38 @@ class APIClient:
             return {"status": "success", "data": response.json()}
         except Exception as e:
             return {"status": "error", "error": str(e)}
-
+    
+    def list_model_regression(self):
+        pass
+    def list_model_clasification(self):
+        pass
+    def run_distributed_training_advanced(self,dataset_name,
+                selected_models,
+                hyperparameters,
+                target_column,
+                metrics,
+                cv_folds,
+                test_size,
+                transform_target=None,
+                exclude_columns=None):
+        try:
+            payload = {
+                "dataset_name": dataset_name,
+                "selected_models": selected_models,
+                "hyperparameters": hyperparameters,
+                "target_column": target_column,
+                "metrics": metrics,
+                "cv_folds": cv_folds,
+                "test_size": test_size,
+                "transform_target": transform_target,
+                "exclude_columns": exclude_columns,
+            }
+            response = self.session.post(f"{self.base_url}/train/distributed/advanced", json=payload, timeout=120)
+            response.raise_for_status()
+            return {"status": "success", "data": response.json()}
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+        
 def render_api_tab(api_client: APIClient):
     """Renderiza la pestaña de API"""
     st.header("🌐 API de Modelos ML")
