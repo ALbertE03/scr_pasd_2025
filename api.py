@@ -1,4 +1,3 @@
-
 import os
 import pickle
 import json
@@ -9,11 +8,12 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, File, UploadFile
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, File, UploadFile, Query
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import uvicorn
+import psutil
 
 from train import DistributedMLTrainer
 from modules.cluster import get_cluster_status
@@ -76,12 +76,19 @@ class ModelInfo(BaseModel):
 
 
 class ClusterInfo(BaseModel):
-    total_nodes: int
-    alive_nodes: int
+    connected: bool
+    resources: dict
+    nodes: list
+    alive_nodes: list
+    dead_nodes: list
     total_cpus: int
-    total_memory_gb: float
-    available_cpus: int
-    available_memory_gb: float
+    total_memory: float
+    total_gpus: int
+    node_count: int
+    alive_node_count: int
+    dead_node_count: int
+    resource_usage: dict
+    timestamp: float
 
 
 class PredictionResponse(BaseModel):
@@ -355,6 +362,13 @@ async def list_models():
         logger.error(f"Error listando modelos: {e}")
         raise HTTPException(status_code=500, detail=f"Error listando modelos: {str(e)}")
 
+@app.post("/data/load",summary='carga un dataset .csv')
+async def laod_data(path:str):
+    if not path.endswith('.csv'):
+        raise HTTPException(status_code=500,details='error abriendo el archivo, tiene que ser un csv') 
+    #enviar al backend
+# tengo que crear otra para configurar parametros
+
 
 @app.get("/models/{model_name}", summary="Información de un modelo específico")
 async def get_model_info(model_name: str):
@@ -466,25 +480,34 @@ async def predict(request: PredictionRequest):
 
 @app.get("/cluster/status", response_model=ClusterInfo, summary="Estado del cluster Ray")
 async def cluster_status():
-    """Obtiene información del estado del cluster Ray"""
+    """Obtiene información extendida del estado del cluster Ray"""
+    import time
     try:
         if not ray.is_initialized():
-            raise HTTPException(status_code=503, detail="Ray no está inicializado")
+            head_address = os.getenv('RAY_HEAD_SERVICE_HOST', 'ray-head')
+            ray.init(address=f"ray://{head_address}:10001", ignore_reinit_error=True)
         
         cluster_resources = ray.cluster_resources()
         nodes = ray.nodes()
-        
-        alive_nodes = len([node for node in nodes if node.get('Alive', False)])
-        
+        alive_nodes = [node for node in nodes if node.get('Alive', False)]
+        dead_nodes = [node for node in nodes if not node.get('Alive', False)]
+
+        resource_usage = ray.available_resources() if hasattr(ray, 'available_resources') else {}
         return ClusterInfo(
-            total_nodes=len(nodes),
+            connected=True,
+            resources=cluster_resources,
+            nodes=nodes,
             alive_nodes=alive_nodes,
+            dead_nodes=dead_nodes,
             total_cpus=int(cluster_resources.get('CPU', 0)),
-            total_memory_gb=round(cluster_resources.get('memory', 0) / (1024**3), 2),
-            available_cpus=int(cluster_resources.get('CPU', 0)),  # Simplificado
-            available_memory_gb=round(cluster_resources.get('memory', 0) / (1024**3), 2)
+            total_memory=cluster_resources.get('memory', 0),
+            total_gpus=int(cluster_resources.get('GPU', 0)),
+            node_count=len(nodes),
+            alive_node_count=len(alive_nodes),
+            dead_node_count=len(dead_nodes),
+            resource_usage=resource_usage,
+            timestamp=time.time()
         )
-        
     except Exception as e:
         logger.error(f"Error obteniendo estado del cluster: {e}")
         raise HTTPException(status_code=500, detail=f"Error obteniendo estado del cluster: {str(e)}")
@@ -776,6 +799,70 @@ async def get_inference_statistics(model_name: Optional[str] = None):
     except Exception as e:
         logger.error(f"Error obteniendo estadísticas de inferencia: {e}")
         raise HTTPException(status_code=500, detail=f"Error obteniendo estadísticas: {str(e)}")
+
+
+@app.post("/add/node", summary="Agregar nodo al cluster Ray")
+async def add_node_to_cluster(worker_name: str = Query(..., description="Nombre del worker"), add_cpu: int = Query(..., description="CPUs para el worker")):
+    import subprocess
+    """Agrega un nodo al cluster Ray (worker externo)"""
+    try:
+            
+        command = f"docker run -d --name ray_worker_{worker_name.lower().replace(" ","_")} --hostname ray_worker_{worker_name} --network scr_pasd_2025_ray-network -e RAY_HEAD_SERVICE_HOST=ray-head -e NODE_ROLE=worker -e LEADER_NODE=false -e FAILOVER_PRIORITY=3 -e ENABLE_AUTO_FAILOVER=false --shm-size=2gb scr_pasd_2025-ray-head bash -c 'echo Worker externo iniciando... && echo Esperando al cluster principal... && sleep 10 && echo Conectando al cluster existente... && ray start --address=ray-head:6379 --num-cpus={add_cpu} --object-manager-port=8076 --node-manager-port=8077 --min-worker-port=10002 --max-worker-port=19999 && echo Worker externo conectado exitosamente! && tail -f /dev/null'"
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            shell=True
+        )
+        if result.returncode == 0:
+            return {"success": True, "message": f"Worker externo 'ray_worker_{worker_name}' añadido exitosamente al cluster", "stdout": result.stdout}
+        else:
+            return {"success": False, "error": result.stderr}
+    except Exception as e:
+        logger.error(f"Excepción al añadir worker externo: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Excepción al añadir worker externo: {str(e)}")
+
+@app.delete("/remove/node", summary="Eliminar nodo del cluster Ray")
+async def remove_node_from_cluster(node_name: str = Query(..., description="Nombre del worker")):
+    try:
+        import subprocess
+        if node_name.startswith("ray-head") or node_name == "ray-head":
+            return {"success": False, "error": "No se puede eliminar el nodo principal (ray-head), ya que es necesario para el funcionamiento del cluster"}
+        command = f"docker stop {node_name} && docker rm {node_name}"
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            shell=True
+        )
+        if result.returncode == 0:
+            return {"success": True, "message": f"Nodo '{node_name}' eliminado exitosamente del cluster", "stdout": result.stdout}
+        else:
+            return {"success": False, "error": result.stderr}
+    except Exception as e:
+        logger.error(f"Excepción al eliminar nodo: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Excepción al eliminar nodo: {str(e)}")
+    
+
+@app.get("/system/status", summary="Estado del sistema (host)")
+async def system_status():
+    """Devuelve información de uso de CPU, memoria y disco del sistema host"""
+    try:
+        cpu_percent = psutil.cpu_percent(interval=1)
+        memory = psutil.virtual_memory()
+        disk = psutil.disk_usage('/')
+        return {
+            "cpu_percent": cpu_percent,
+            "memory_percent": memory.percent,
+            "memory_available": memory.available / (1024**3),  # GB
+            "memory_total": memory.total / (1024**3),  # GB
+            "disk_percent": disk.percent,
+            "disk_free": disk.free / (1024**3),  # GB
+            "disk_total": disk.total / (1024**3)  # GB
+        }
+    except Exception as e:
+        logger.error(f"Error obteniendo estado del sistema: {e}")
+        raise HTTPException(status_code=500, detail=f"Error obteniendo estado del sistema: {str(e)}")
 
 
 def main():

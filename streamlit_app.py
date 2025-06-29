@@ -7,12 +7,11 @@ import time
 from datetime import datetime
 
 from modules.utils import initialize_session_state, load_custom_styles, get_unique_key
-from modules.cluster import get_cluster_status, get_system_metrics, render_cluster_status_tab
+from modules.cluster import render_cluster_status_tab
 from modules.views import (
-    render_training_tab, 
-    render_system_metrics_tab,
+    render_training_tab,
 )
-from modules.api_client import render_api_tab
+from modules.api_client import render_api_tab,APIClient
 
 
 
@@ -45,15 +44,30 @@ tab_titles = [
     "🔍 Estado del Cluster",
     "🧠 Entrenamiento ML",
     "🌐 API de Modelos",
-    #"💻 Métricas del Sistema",
 ]
 
 tabs = st.tabs(tab_titles)
-
-cluster_status = get_cluster_status()
-system_metrics = get_system_metrics()
+api_client = APIClient()
 
 
+cluster_status = api_client.get_cluster_status()
+response = api_client.get_system_metrics()
+
+if response["status"] == "success":
+    system_metrics = response["data"]
+else:
+    system_metrics = {
+        "cpu_percent": 0,
+        "memory_percent": 0,
+        "memory_available": 0,
+            "memory_total": 0,
+            "disk_percent": 0,
+            "disk_free": 0,
+            "disk_total": 0
+        }
+    
+if 'data' not in cluster_status:
+    st.rerun()
 with st.sidebar:
     st.title("⚙️ Configuración")
     
@@ -76,14 +90,14 @@ with st.sidebar:
     
 
 with tabs[0]:
-    render_cluster_status_tab(cluster_status,system_metrics)
+    render_cluster_status_tab(cluster_status,system_metrics,api_client)
 
 with tabs[1]:
-    render_training_tab(cluster_status)
+    render_training_tab(cluster_status,api_client)
 
 
 with tabs[2]:
-    render_api_tab()
+    render_api_tab(api_client)
 
 #with tabs[3]:
  #   render_system_metrics_tab(system_metrics)

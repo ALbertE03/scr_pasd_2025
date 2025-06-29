@@ -78,7 +78,26 @@ class APIClient:
             return {"status": "success", "data": response.json()}
         except Exception as e:
             return {"status": "error", "error": str(e)}
-    
+    def add_nodo(self, worker_name: str, add_cpu: int) -> Dict:
+        """Agrega un nodo al cluster Ray llamando al endpoint /add/node"""
+        try:
+            payload = {"worker_name": worker_name, "add_cpu": add_cpu}
+            response = self.session.post(f"{self.base_url}/add/node", params=payload, timeout=30)
+            response.raise_for_status()
+            return {"status": "success", "data": response.json()}
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+        
+    def delete_nodo(self, worker_name: str) -> Dict:
+        """Elimina un nodo del cluster Ray llamando al endpoint /remove/node"""
+        try:
+            params = {"node_name": worker_name}
+            response = self.session.delete(f"{self.base_url}/remove/node", params=params, timeout=30)
+            response.raise_for_status()
+            return {"status": "success", "data": response.json()}
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+        
     def get_cluster_status(self) -> Dict:
         """Obtiene el estado del cluster"""
         try:
@@ -269,8 +288,16 @@ class APIClient:
         except Exception as e:
             return {"status": "error", "error": f"Error en predicción concurrente: {str(e)}"}
 
+    def get_system_metrics(self):
+        """Obtiene métricas del sistema desde el endpoint /system/status"""
+        try:
+            response = self.session.get(f"{self.base_url}/system/status", timeout=10)
+            response.raise_for_status()
+            return {"status": "success", "data": response.json()}
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
 
-def render_api_tab():
+def render_api_tab(api_client: APIClient):
     """Renderiza la pestaña de API"""
     st.header("🌐 API de Modelos ML")
     

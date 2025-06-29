@@ -87,6 +87,7 @@ services:
       python api.py
       "
     volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
       - .:/app
       - ./training_results:/app/training_results
       - ./models:/app/models

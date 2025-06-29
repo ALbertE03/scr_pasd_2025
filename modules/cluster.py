@@ -76,24 +76,8 @@ def get_cluster_status():
 
 @st.cache_data(ttl=10)
 def get_system_metrics():
-    """Obtiene métricas del sistema"""
-    try:
-        cpu_percent = psutil.cpu_percent(interval=1)
-        memory = psutil.virtual_memory()
-        disk = psutil.disk_usage('/')
-        
-        return {
-            "cpu_percent": cpu_percent,
-            "memory_percent": memory.percent,
-            "memory_available": memory.available / (1024**3),  # GB
-            "memory_total": memory.total / (1024**3),  # GB
-            "disk_percent": disk.percent,
-            "disk_free": disk.free / (1024**3),  # GB
-            "disk_total": disk.total / (1024**3)  # GB
-        }
-    except Exception as e:
-        st.error(f"Error obteniendo métricas del sistema: {e}")
-        return {}
+    """Obtiene métricas del sistema usando el endpoint /system/status"""
+    pass
 
 def plot_cluster_metrics(cluster_status):
     """Crea gráficos de métricas del cluster"""
@@ -242,11 +226,10 @@ def plot_cluster_metrics(cluster_status):
         )
         st.plotly_chart(fig_nodes, use_container_width=True, key="cluster_nodes_status")
 
-def render_cluster_status_tab(cluster_status,system_metrics):
+def render_cluster_status_tab(cluster_status,system_metrics,api_client):
     """Renderiza la pestaña de estado detallado del cluster"""
     st.header("Estado Detallado del Cluster")
     col1, col2, col3, col4, col5 = st.columns(5)
-    
     with col1:
         st.metric(
             label="Nodos Vivos",
@@ -325,7 +308,7 @@ def render_cluster_status_tab(cluster_status,system_metrics):
                                                     type="primary")
             if add_node_btn and worker_name:
                 with st.spinner(f"Añadiendo nuevo nodo '{worker_name}' al cluster..."):
-                    success = add_external_worker(worker_name,add_cpu)
+                    success = add_external_worker(worker_name,add_cpu,api_client)
                     
                     if success:
                         st.info("Puede tardar unos segundos en reflejarse en el dashboard del cluster.")
@@ -361,7 +344,7 @@ def render_cluster_status_tab(cluster_status,system_metrics):
                     
                     if remove_node_btn and node_to_remove:
                         with st.spinner(f"Eliminando nodo '{node_to_remove}' del cluster..."):
-                            success = remove_ray_node(node_to_remove)
+                            success = remove_ray_node(node_to_remove,api_client)
                             
                             if success:
                                 st.info("El nodo ha sido eliminado. Puede tardar unos segundos en reflejarse en el dashboard.")
@@ -449,81 +432,36 @@ def render_cluster_status_tab(cluster_status,system_metrics):
         st.info("Por favor verifica que el cluster Ray esté en ejecución y sea accesible desde esta máquina.")
 
 
-def add_external_worker(worker_name,add_cpu):
-    """Añade un worker externo usando docker directamente"""
-    try:
-        in_docker = os.path.exists('/.dockerenv')
-        
-        if in_docker:
-            socket_exists = os.path.exists('/var/run/docker.sock')
-            if not socket_exists:
-                st.error("No se puede acceder al socket de Docker desde dentro del contenedor.")
-                st.info("Para añadir workers externos, ejecuta este comando desde el host o asegúrate de montar el socket de Docker.")
-                return False
-            command = f"""
-            docker run -d --name ray_worker_{worker_name} \
-            --hostname ray_worker_{worker_name} \
-            --network scr_pasd_2025_ray-network \
-            -e RAY_HEAD_SERVICE_HOST=ray-head \
-            -e NODE_ROLE=worker \
-            -e LEADER_NODE=false \
-            -e FAILOVER_PRIORITY=3 \
-            -e ENABLE_AUTO_FAILOVER=false \
-            --shm-size=2gb \
-            scr_pasd_2025-ray-head \
-            bash -c "echo 'Worker externo iniciando...' && \
-                    echo 'Esperando al cluster principal...' && \
-                    sleep 10 && \
-                    echo 'Conectando al cluster existente...' && \
-                    ray start --address=ray-head:6379 --num-cpus={add_cpu} --object-manager-port=8076 \
-                    --node-manager-port=8077 --min-worker-port=10002 --max-worker-port=19999 && \
-                    echo 'Worker externo conectado exitosamente!' && \
-                    tail -f /dev/null"
-            """
-        else:
-            st.info("Ejecutando script externo para añadir worker. Este proceso puede tardar unos momentos...")
-        
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            shell=True
-        )
-        
-        if result.returncode == 0:
-            st.success(f"Worker externo 'ray_worker_{worker_name}' añadido exitosamente al cluster")
+def add_external_worker(worker_name, add_cpu, api_client):
+    """Añade un worker externo usando la API REST"""
+    response = api_client.add_nodo(worker_name, add_cpu)
+    if response["status"] == "success":
+        data = response["data"]
+        if data.get("success"):
+            st.success(data.get("message", "Worker añadido exitosamente."))
             return True
         else:
-            st.error(f"Error al añadir worker externo: {result.stderr}")
+            st.error(data.get("error", "No se pudo añadir el worker."))
             return False
-    except Exception as e:
-        st.error(f"Excepción al añadir worker externo: {str(e)}")
+    else:
+        st.error(f"Error al añadir worker: {response.get('error', 'Error desconocido')}")
         return False
+    
+    
 
-def remove_ray_node(node_name):
-    """Elimina un nodo Ray usando su nombre"""
-    try:
-        if node_name.startswith("ray-head") or node_name == "ray-head":
-            st.info("No se puede eliminar el nodo principal (ray-head), ya que es necesario para el funcionamiento del cluster")
-            return False
-            
-        command = f"docker stop {node_name} && docker rm {node_name}"
-        
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            shell=True
-        )
-        
-        if result.returncode == 0:
-            st.success(f"Nodo '{node_name}' eliminado exitosamente del cluster")
+def remove_ray_node(node_name, api_client):
+    """Elimina un nodo Ray usando su nombre a través de la API REST"""
+    response = api_client.delete_nodo(node_name)
+    if response["status"] == "success":
+        data = response["data"]
+        if data.get("success"):
+            st.success(data.get("message", "Nodo eliminado exitosamente."))
             return True
         else:
-            st.error(f"Error al eliminar nodo: {result.stderr}")
+            st.error(data.get("error", "No se pudo eliminar el nodo."))
             return False
-    except Exception as e:
-        st.error(f"Excepción al eliminar nodo: {str(e)}")
+    else:
+        st.error(f"Error al eliminar nodo: {response.get('error', 'Error desconocido')}")
         return False
 
 def get_all_ray_nodes():

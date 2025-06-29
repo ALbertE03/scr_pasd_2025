@@ -11,6 +11,7 @@ import ray
 from sklearn.metrics import log_loss, accuracy_score
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+
 def load_training_results():
     """Carga los resultados de entrenamiento guardados"""
     results = {}
@@ -106,6 +107,376 @@ def plot_model_comparison(results_data, chart_prefix="default"):
         margin=dict(l=20, r=20, t=60, b=40)
     )
     st.plotly_chart(fig2, use_container_width=True, key=f"{chart_prefix}_model_comparison_accuracy_scatter")
+
+def run(datasets, models, hyperparameters)->tuple:
+    """
+    Entrena múltiples datasets en paralelo utilizando Ray para distribución, 
+    permitiendo que los nodos libres procesen otros datasets sin esperar
+    
+    Args:
+        datasets: Lista de nombres de datasets a entrenar
+        models: Lista de modelos a entrenar para cada dataset
+        hyperparameters: Diccionario de hiperparámetros para cada modelo
+        
+    Returns:
+        Tuple con los resultados y el historial de entrenamiento
+    """
+    results = {}
+    training_history = {}
+
+    status_container = st.empty()
+    status_container.info("🔄 Iniciando entrenamiento distribuido...")
+    
+    progress = st.progress(0)
+    if not ray.is_initialized():
+        try:
+            head_address = os.getenv('RAY_HEAD_SERVICE_HOST', 'ray-head')
+            ray_port = os.getenv('RAY_HEAD_SERVICE_PORT', '10001')
+            
+            connection_attempts = [
+                f"ray://{head_address}:{ray_port}",
+                f"{head_address}:{ray_port}",
+                "auto",
+                None
+            ]
+            
+            connected = False
+            for address in connection_attempts:
+                try:
+                    if address:
+                        status_container.info(f"⚠️ Intentando conectar a Ray en: {address}")
+                        ray.init(address=address, ignore_reinit_error=True)
+                    else:
+                        status_container.info("⚠️ Iniciando Ray en modo local...")
+                        ray.init(ignore_reinit_error=True)
+                    
+                    connected = True
+                    status_container.info(f"✅ Conectado a Ray en: {ray.get_runtime_context().gcs_address}")
+                    break
+                except Exception as e:
+                    status_container.warning(f"⚠️ No se pudo conectar a Ray en {address}: {str(e)}")
+                    continue
+                    
+            if not connected:
+                status_container.error("❌ No se pudo conectar al cluster Ray")
+                return {}, {}
+                
+        except Exception as e:
+            status_container.error(f"❌ Error conectando con Ray: {str(e)}")
+            return {}, {}
+
+    trainer = DistributedMLTrainer()
+        
+    available_datasets = trainer.get_available_datasets()
+    dataset_objects = {}
+    
+    for dataset_name in datasets:
+        if dataset_name in available_datasets:
+            dataset_objects[dataset_name] = ray.get(available_datasets[dataset_name])
+    
+    available_models = trainer.get_available_models()
+    models_to_train = {}
+    
+    for model_name in models:
+        if model_name in available_models:
+            base_model = available_models[model_name]
+            if hyperparameters and model_name in hyperparameters:
+                for param, value in hyperparameters[model_name].items():
+                    if hasattr(base_model, param):
+                        setattr(base_model, param, value)
+            models_to_train[model_name] = base_model
+  
+    @ray.remote(num_cpus=1, max_retries=3, retry_exceptions=True)
+    def train_model_for_dataset(model, model_name, dataset_ref, dataset_name, data_size=None):
+        """Función remota para entrenar un modelo en un dataset específico"""
+        try:
+            
+            try:
+                
+                X, y = dataset_ref.data, dataset_ref.target
+            except Exception as e:
+                raise ValueError(f"Error al obtener el dataset desde Ray: {str(e)}")
+
+            test_size = data_size if data_size is not None else 0.3
+            X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=test_size,random_state=42)
+            
+            start_time = time.time()            
+            model.fit(X_train, y_train)
+            
+            train_preds = model.predict(X_train)
+            val_preds = model.predict(X_val)
+
+            train_cm = confusion_matrix(y_train, train_preds).tolist()
+            val_cm = confusion_matrix(y_val, val_preds).tolist()
+            
+            train_acc = accuracy_score(y_train, train_preds)
+            val_acc = accuracy_score(y_val, val_preds)
+
+            try:
+                    train_probs = model.predict_proba(X_train)
+                    val_probs = model.predict_proba(X_val)
+                    train_loss = log_loss(y_train, train_probs)
+                    val_loss = log_loss(y_val, val_probs)
+            except:
+
+                    train_loss = 1.0 - train_acc
+                    val_loss = 1.0 - val_acc
+
+            train_acc = float(train_acc)
+            val_acc = float(val_acc)
+            train_loss = float(train_loss)
+            val_loss = float(val_loss)
+
+            if train_acc > 1:
+                    train_acc = min(1.0, train_acc / 100)
+            if val_acc > 1:
+                    val_acc = min(1.0, val_acc / 100)
+
+            train_loss = max(0, train_loss)
+            val_loss = max(0, val_loss)
+
+            
+            if train_loss > 10:                    
+                train_loss = min(10.0, train_loss)
+            if val_loss > 10:
+                    val_loss = min(10.0, val_loss)
+                    
+            return {
+                    'model_name': model_name,
+                    'status': 'success',
+                    'model': model, 
+                    'metrics': {
+                        'accuracy': train_acc,
+                        'loss': train_loss,
+                        'val_accuracy': val_acc,
+                        'val_loss': val_loss,
+                        'train_confusion_matrix': train_cm,
+                        'val_confusion_matrix': val_cm
+                    }
+                }
+        except Exception as e:
+                return {
+                    'model_name': model_name,
+                    'status': 'failed',
+                    'error': str(e)
+                }
+    
+    all_tasks = []
+    task_mapping = {}  
+   
+           
+    total_task_count = len(datasets) * len(models_to_train)
+    status_container.info(f"🚀 Programando {total_task_count} tareas de entrenamiento")
+    for dataset_name, dataset_ref in dataset_objects.items():
+        for model_name, model in models_to_train.items():
+            if dataset_name not in training_history:
+                training_history[dataset_name]={}
+            training_history[dataset_name][model_name] = {
+                "accuracy": None,
+                "loss": None,
+                "val_accuracy": None,
+                "val_loss": None,
+                "start_time": time.time()
+            }
+            data_size = st.session_state.data_test_size.get(dataset_name, 0.3)
+            task = train_model_for_dataset.remote(model, model_name, dataset_ref, dataset_name, data_size)
+            all_tasks.append(task)
+            task_mapping[task] = (dataset_name, model_name)
+
+    remaining_tasks = list(all_tasks)
+    completed_tasks = 0
+    _models=[]
+    while remaining_tasks:
+        try:
+            done_ids, remaining_tasks = ray.wait(remaining_tasks, num_returns=2)
+
+            if not done_ids:
+                continue
+                
+            for done_id in done_ids:
+                try:
+                    dataset_name, model_name = task_mapping.get(done_id, ("desconocido", "desconocido"))
+                    
+                    try:
+                        result = ray.get(done_id)
+                    except Exception as ray_error:
+                        status_container.warning(f"⚠️ Error en tarea {dataset_name}/{model_name}: {str(ray_error)}")
+                        continue
+                    
+                    if result['status'] == 'success':
+                        _models.append((result['model'],model_name,dataset_name))
+                        if dataset_name not in results:
+                            results[dataset_name] = {}
+                        if dataset_name not in training_history:
+                            training_history[dataset_name] = {}
+                        start_time = training_history[dataset_name][model_name].get('start_time', time.time())
+                        end_time = time.time()
+                        training_duration = end_time - start_time
+                        
+                        metrics = result['metrics'].copy()
+                        metrics['training_time'] = training_duration
+                        results[dataset_name][model_name] = metrics
+                        
+                        training_history[dataset_name][model_name] = {
+                            'accuracy': result['metrics']['accuracy'],
+                            'val_accuracy': result['metrics']['val_accuracy'],
+                            'loss': result['metrics']['loss'],
+                            'val_loss': result['metrics']['val_loss'],
+                            'training_time': training_duration                 
+                        }
+                    
+                        status_container.info(f"✅ Completado: {dataset_name} / {model_name} (Accuracy: {result['metrics']['accuracy']:.4f})")
+                    else:
+                        status_container.warning(f"⚠️ Error en tarea {dataset_name} / {model_name}: {result.get('error', 'Desconocido')}")
+                except Exception as task_error:
+                    status_container.error(f"Error procesando tarea individual: {str(task_error)}")
+                
+                completed_tasks += 1
+                progress_value = (completed_tasks / total_task_count) * 100
+                progress.progress(int(progress_value))
+                
+        except ray.exceptions.RayError as ray_error:
+            status_container.error(f"Error con Ray: {str(ray_error)}")
+            time.sleep(1)  
+        except Exception as general_error:
+            status_container.error(f"Error general en el bucle de procesamiento: {str(general_error)}")
+    
+    progress.progress(100)
+    status_container.success(f"✅ Entrenamiento completado - {len(results)} datasets procesados")
+    
+    if len(results) > 0:        
+        st.subheader("📊 Comparación entre Datasets")
+
+        st.markdown("### 📈 Rendimiento del mismo modelo en diferentes datasets")
+        comparison_data = []
+        for dataset_name, dataset_results in results.items():
+            for model_name, metrics in dataset_results.items():
+                comparison_data.append({
+                    'Dataset': dataset_name,
+                    'Modelo': model_name,
+                    'Accuracy': metrics.get('accuracy', 0),
+                    'Tiempo (s)': metrics.get('training_time', 0),
+                    'CV Score': metrics.get('cv_mean', 0.5)
+                })
+        if len(comparison_data) > 0:
+            df_comparison = pd.DataFrame(comparison_data)
+                    
+            fig_models = px.bar(
+                df_comparison,
+                x="Modelo", 
+                y="Accuracy",
+                color="Dataset",
+                barmode="group",
+                title="Comparación de Accuracy por Modelo entre Datasets",
+                height=500,
+                color_discrete_sequence=px.colors.qualitative.Bold
+            )
+            fig_models.update_layout(
+                xaxis_tickangle=-45,
+                plot_bgcolor='rgba(0,0,0,0)',
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                margin=dict(l=20, r=20, t=60, b=80)
+            )            
+            st.plotly_chart(fig_models, use_container_width=True)
+            
+            fig_time = px.scatter(
+                df_comparison, 
+                x="Tiempo (s)", 
+                y="Accuracy", 
+                color="Dataset", 
+                size="CV Score",
+                hover_data=["Modelo", "Tiempo (s)", "Accuracy"],
+                title="Tiempo de Entrenamiento vs Accuracy por Dataset",
+                height=500,
+                labels={"Tiempo (s)": "Tiempo (segundos)", "Accuracy": "Precisión"},
+                color_discrete_sequence=px.colors.qualitative.Bold
+            )
+            fig_time.update_layout(
+                plot_bgcolor='rgba(0,0,0,0)',
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                xaxis=dict(title="Tiempo de Entrenamiento (segundos)"),
+                yaxis=dict(title="Precisión", tickformat=".0%", range=[0, 1])
+            )
+            st.plotly_chart(fig_time, use_container_width=True)
+            st.markdown("### 🔍 Análisis por Dataset")
+            dataset_tabs = st.tabs([f"Dataset: {dataset}" for dataset in results.keys()])
+            o=0
+            for i, (dataset, tab) in enumerate(zip(results.keys(), dataset_tabs)):
+                with tab:
+                    if dataset in training_history:
+                        st.markdown(f"#### Métricas de entrenamiento: {dataset}")
+                        plot_training_metrics(training_history[dataset], chart_prefix=f"tab_{i}")
+                        
+                        st.markdown("#### 🧩 Matrices de Confusión")
+                        model_tabs = st.tabs([f"Modelo: {model}" for model in results[dataset].keys()])
+                        
+                        for j, (model_name, model_tab) in enumerate(zip(results[dataset].keys(), model_tabs)):
+                            with model_tab:
+                                metrics = results[dataset][model_name]
+                                if 'val_confusion_matrix' in metrics and 'train_confusion_matrix' in metrics:
+                                    col1, col2 = st.columns(2)
+                                    
+                                    with col1:
+                                        st.markdown("**Matriz de Confusión (Entrenamiento)**")
+                                        train_cm = np.array(metrics['train_confusion_matrix'])
+                                        fig_train_cm = px.imshow(train_cm,
+                                                    labels=dict(x="Predicción", y="Real", color="Cantidad"),
+                                                    x=[f"Clase {i}" for i in range(len(train_cm))],
+                                                    y=[f"Clase {i}" for i in range(len(train_cm))],
+                                                    color_continuous_scale="blues",
+                                                    text_auto=True)
+                                        fig_train_cm.update_layout(width=400, height=400)
+                                        st.plotly_chart(fig_train_cm, use_container_width=True,key=f"_q{o}{model_name}")
+                                    
+                                    with col2:
+                                        st.markdown("**Matriz de Confusión (Validación)**")
+                                        val_cm = np.array(metrics['val_confusion_matrix'])
+                                        fig_val_cm = px.imshow(val_cm,
+                                                    labels=dict(x="Predicción", y="Real", color="Cantidad"),
+                                                    x=[f"Clase {i}" for i in range(len(val_cm))],
+                                                    y=[f"Clase {i}" for i in range(len(val_cm))],
+                                                    color_continuous_scale="reds",
+                                                    text_auto=True)                                        
+                                        fig_val_cm.update_layout(width=400, height=400)
+                                        st.plotly_chart(fig_val_cm, use_container_width=True,key=f'_s{o}{model_name}')
+                            
+                                else:
+                                    st.warning("No hay datos de matrices de confusión disponibles para este modelo")
+                            o+=1
+                o+=1    
+    for _i,j,k in _models:
+        results_filename = os.path.join("training_results", f"results_{k}.json")
+        with open(results_filename, 'w') as f:
+            json_results = {}
+            for model_name in results.get(k, {}).keys():
+                metrics = results[k][model_name]
+                json_results[model_name] = {
+                    "accuracy": metrics.get("val_accuracy", metrics.get("accuracy", 0)),
+                    "training_time": metrics.get("training_time", 0),
+                    "cv_mean": metrics.get("val_accuracy", 0),
+                    "cv_std": 0.0,
+                    "timestamp": datetime.now().isoformat(),
+                    "status": "success"
+                }
+            json.dump(json_results, f)
+        
+        history_filename = os.path.join("training_results", f"training_history_{k}.json")
+        with open(history_filename, 'w') as f:
+            json_history = {}
+            for model_name, data in training_history.items():
+                json_history[model_name] = {
+                        _k: _v for _k, _v in data.items() 
+                        if isinstance(_v, (list, dict, str, int, float)) or _v is None
+                    }
+            
+            json.dump(json_history, f)
+            
+        models_directory = os.path.join("training_results", f"models_{k}")
+        model_filename = os.path.join(models_directory, f"{j}.pkl")
+        os.makedirs(models_directory, exist_ok=True)
+        with open(model_filename, 'wb') as f:
+                pickle.dump(_i, f)
+    return results, training_history
 
 
 
@@ -289,7 +660,7 @@ def run_distributed_training_advanced(dataset_name, selected_models, hyperparame
                 "node_assignment": None
             }
         
-        @ray.remote(num_cpus=1, max_retries=3, retry_exceptions=True,scheduling_strategy="SPREAD",runtime_env={"fail_fast": False },catch_exceptions=True,retry_delay_s=2.0)
+        @ray.remote(num_cpus=1, max_retries=3, retry_exceptions=True)
         def train_model_with_tracking(model, model_name, X, y, fold_idx,d):
             """Función remota para entrenar un modelo y rastrear su progreso"""      
             try:
@@ -371,7 +742,7 @@ def run_distributed_training_advanced(dataset_name, selected_models, hyperparame
                 node_idx = i % len(alive_nodes)
                 node_id = alive_nodes[node_idx]['NodeID']
                 training_history[model_name]['node_assignment'] = node_id
-                task = train_model_with_tracking.options(num_cpus=1,max_retries=3, retry_exceptions=True).remote(model, model_name, X, y, 0, 1)
+                task = train_model_with_tracking.remote(model, model_name, X, y, 0, 1)
                 
                 tasks.append(task)
                 task_mapping[task] = (model_name, 0)  

@@ -28,8 +28,6 @@ from sklearn.naive_bayes import (
 from sklearn.naive_bayes import GaussianNB, MultinomialNB, ComplementNB, BernoulliNB
 from sklearn.neural_network import MLPClassifier
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis, QuadraticDiscriminantAnalysis
-from sklearn.datasets import load_iris, load_wine, load_breast_cancer, load_digits
-
 import pickle
 import os
 import logging
@@ -38,18 +36,6 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-@ray.remote(num_cpus=1, max_retries=3, retry_exceptions=True,scheduling_strategy="SPREAD",runtime_env={"fail_fast": False },catch_exceptions=True,retry_delay_s=2.0)
-def iris():
-    return load_iris()
-@ray.remote(num_cpus=1, max_retries=3, retry_exceptions=True,scheduling_strategy="SPREAD",runtime_env={"fail_fast": False },catch_exceptions=True,retry_delay_s=2.0)
-def wine():
-    return load_wine()
-@ray.remote(num_cpus=1, max_retries=3, retry_exceptions=True,scheduling_strategy="SPREAD",runtime_env={"fail_fast": False },catch_exceptions=True,retry_delay_s=2.0)
-def breast_cancer():
-    return load_breast_cancer()
-@ray.remote(num_cpus=1, max_retries=3, retry_exceptions=True,scheduling_strategy="SPREAD",runtime_env={"fail_fast": False },catch_exceptions=True,retry_delay_s=2.0)
-def digits():
-    return load_digits()
 
 class DistributedMLTrainer:
     def __init__(self, head_address=None, enable_fault_tolerance=True):
@@ -88,15 +74,12 @@ class DistributedMLTrainer:
         except Exception as e:
             logger.warning(f"Error actualizando información del cluster: {e}")
     
-    def get_available_datasets(self):       
-        """Retorna los datasets disponibles para clasificación"""
-        return {
-            'iris': iris.remote(),
-            'wine': wine.remote(),
-            'breast_cancer': breast_cancer.remote(),
-            'digits': digits.remote()
-            }
 
+    def laod_dataset_one(self,path):
+        pass
+    
+    def loads(self):
+        pass
     def get_available_models(self):
         """Retorna los modelos de clasificación supervisada disponibles"""
         models = {
@@ -196,7 +179,10 @@ class DistributedMLTrainer:
             'alive_nodes': len([node for node in self.cluster_nodes if node.get('Alive', False)])
         }
 
-
+    def train_one_dataset(self):
+        pass
+    def train(self):
+        pass
 if __name__ == "__main__":
     
     pass
