@@ -51,9 +51,9 @@ services:
       - ENABLE_AUTO_FAILOVER=false
     command: >
       bash -c "
-      sleep 20 &&
+      sleep 10 &&
       echo 'Starting ML API...' &&
-      python api.py
+      python api.py && tail -f /dev/null
       "
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -83,7 +83,7 @@ services:
       - ENABLE_AUTO_FAILOVER=false
     command: >
       bash -c "
-      sleep 15 &&
+      sleep 20 &&
       echo 'Starting Streamlit application...' &&
       streamlit run streamlit_app.py --server.address=0.0.0.0 --server.port=8501"
     volumes:
@@ -112,7 +112,7 @@ services:
       sleep 10 &&
       ray start 
       --address=ray-head:6379 
-      --num-cpus=1 
+      --num-cpus=2 
       --object-manager-port=8076 
       --node-manager-port=8077 
       --min-worker-port=10002 
@@ -144,7 +144,7 @@ services:
       sleep 15 &&
       ray start 
       --address=ray-head:6379 
-      --num-cpus=1 
+      --num-cpus=2 
       --object-manager-port=8076 
       --node-manager-port=8077 
       --min-worker-port=10002 
@@ -176,7 +176,7 @@ services:
       sleep 20 &&
       ray start 
       --address=ray-head:6379 
-      --num-cpus=1 
+      --num-cpus=2 
       --object-manager-port=8076 
       --node-manager-port=8077 
       --min-worker-port=10002 

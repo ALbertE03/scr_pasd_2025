@@ -12,7 +12,9 @@ from modules.views import (
     render_training_tab,
 )
 from modules.api_client import render_api_tab,APIClient
+import time
 
+time.sleep(5)
 
 
 st.set_page_config(

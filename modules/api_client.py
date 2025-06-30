@@ -26,7 +26,44 @@ class APIClient:
         self.base_url = base_url
         self.session = requests.Session()
         print(f"APIClient inicializado con URL: {self.base_url}")
-    
+
+    def start(self,training_params:dict):
+        """
+        Envía la solicitud de entrenamiento a la API de FastAPI.
+        """
+        try:
+            df = training_params.get("df")
+            if isinstance(df, pd.DataFrame):
+                payload = training_params.copy()
+                payload["dataset"] = df.to_dict(orient='records')
+                del payload["df"] 
+            else:
+                raise ValueError("El parámetro 'df' debe ser un DataFrame de pandas.")
+
+            response = self.session.post(
+                f"{self.base_url}/train/oneDataset",
+                json=payload,
+            )
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            return {"error": f"Error de conexión con la API: {str(e)}"}
+        except Exception as e:
+            return {"error": f"Error inesperado: {str(e)}"}
+
+    def read(self, uploaded_file) -> pd.DataFrame:
+        try:
+            files = {'file': (uploaded_file.name, uploaded_file.getvalue(), 'text/csv')}
+            
+            response = self.session.post(  
+                f"{self.base_url}/read/csv",
+                files=files
+            )
+            response.raise_for_status()
+            return pd.DataFrame(response.json()["data"])
+        except Exception as e:
+            print(f"Error en read: {str(e)}")
+            return pd.DataFrame()
     def health_check(self) -> Dict:
         """Verifica el estado de salud de la API"""
         try:
@@ -308,10 +345,6 @@ class APIClient:
         except Exception as e:
             return {"status": "error", "error": str(e)}
     
-    def list_model_regression(self):
-        pass
-    def list_model_clasification(self):
-        pass
     def run_distributed_training_advanced(self,dataset_name,
                 selected_models,
                 hyperparameters,

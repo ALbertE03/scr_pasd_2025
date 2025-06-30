@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 import uvicorn
 import psutil
 import ray
-
+from modules.training import Trainer
 import subprocess
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -56,10 +56,6 @@ class PredictionRequest(BaseModel):
     return_probabilities: bool = Field(False, description="Retornar probabilidades además de predicciones")
 
 
-class TrainingRequest(BaseModel):
-    dataset_name: str = Field("iris", description="Nombre del dataset (iris, wine, breast_cancer, digits)")
-    selected_models: Optional[List[str]] = Field(None, description="Lista de modelos a entrenar")
-    test_size: float = Field(0.3, description="Proporción de datos para prueba", ge=0.1, le=0.5)
 
 
 class ModelInfo(BaseModel):
@@ -70,7 +66,6 @@ class ModelInfo(BaseModel):
     training_time: float
     timestamp: str
     status: str
-
 
 class ClusterInfo(BaseModel):
     connected: bool
@@ -146,18 +141,6 @@ def get_inference_stats(model_name: str = None) -> Dict:
         logger.error(f"Error cargando estadísticas de inferencia: {e}")
         return {}
 
-
-def get_trainer():
-    """Obtiene o inicializa el trainer distribuido"""
-    global trainer
-    if trainer is None:
-        try:
-            trainer = DistributedMLTrainer(enable_fault_tolerance=True)
-            logger.info("Trainer distribuido inicializado correctamente")
-        except Exception as e:
-            logger.error(f"Error inicializando trainer: {e}")
-            raise HTTPException(status_code=500, detail=f"Error inicializando trainer: {str(e)}")
-    return trainer
 
 
 def load_model_from_file(model_name: str, dataset_name: str = None, models_dir: str = "models"):
@@ -345,19 +328,6 @@ async def health_check():
     return health_status
 
 
-@app.get("/models", summary="Listar modelos disponibles")
-async def list_models():
-    """Lista todos los modelos entrenados disponibles con sus métricas"""
-    try:
-        models = get_available_models()
-        return {
-            "total_models": len(models),
-            "models": models,
-            "timestamp": datetime.now().isoformat()
-        }
-    except Exception as e:
-        logger.error(f"Error listando modelos: {e}")
-        raise HTTPException(status_code=500, detail=f"Error listando modelos: {str(e)}")
 
 
 @app.get("/models/{model_name}", summary="Información de un modelo específico")
@@ -841,6 +811,85 @@ async def system_status():
         logger.error(f"Error obteniendo estado del sistema: {e}")
         raise HTTPException(status_code=500, detail=f"Error obteniendo estado del sistema: {str(e)}")
 
+@app.post("/read/csv", summary="Leer archivo CSV")
+async def read_csv(file: UploadFile = File(..., description="Archivo CSV a leer")):
+    """Lee un archivo CSV y devuelve su contenido como JSON"""
+    try:
+        if not file.filename.endswith('.csv'):
+            raise HTTPException(status_code=400, detail="Solo se aceptan archivos CSV")
+        
+        content = await file.read()
+        df = pd.read_csv(pd.io.common.StringIO(content.decode('utf-8')))
+        df = df.replace({np.nan: None})
+        return {"data": df.to_dict(orient='records')}
+    except Exception as e:
+        logger.error(f"Error leyendo archivo CSV: {e}")
+        raise HTTPException(status_code=500, detail=f"Error leyendo archivo CSV: {str(e)}")
+
+class TrainingRequest(BaseModel):
+    dataset: List[Dict[str, Any]] = Field(..., description="Dataset en formato JSON (orient='records')")
+    target_column: str = Field(..., description="Nombre de la columna objetivo")
+    problem_type: str = Field(..., description="Tipo de problema: 'Clasificación' o 'Regresión'")
+    metrics: List[str] = Field(..., description="Lista de métricas a calcular")
+    test_size: float = Field(0.2, ge=0.1, le=0.5)
+    cv_folds: int = Field(5, ge=2, description="Número de folds para validación cruzada")
+    random_state: int = 42
+    features_to_exclude: List[str] = []
+    transform_target: bool = False
+    selected_models: List[str] = Field(..., description="Lista de nombres de modelos a entrenar")
+    estrategia:List[str]
+
+
+@app.post('/train/oneDataset', summary='Entrena varios modelos en el mismo dataset')
+async def train(params: TrainingRequest):
+    """
+    Recibe los parámetros de entrenamiento, lanza el trabajo en segundo plano y devuelve un ID de experimento.
+    """
+    try:
+        logger.info('inicio')
+
+        df = pd.DataFrame(params.dataset)
+        logger.info(f"Datos recibidos: {df.shape[0]} filas, {df.shape[1]} columnas")
+        actor_params = {
+            "df": df,
+            "target_column": params.target_column,
+            "problem_type": params.problem_type,
+            "metrics": params.metrics,
+             "test_size": params.test_size,
+            "cv_folds": params.cv_folds, 
+            "random_state": params.random_state,
+            "features_to_exclude": params.features_to_exclude,
+            "transform_target": params.transform_target,
+            "selected_models": params.selected_models,
+            'estrategia':params.estrategia
+        }
+        trainer_actor = Trainer(**actor_params)
+        result = trainer_actor.train()
+
+        logger.info(f"Entrenamiento iniciado con ID: {result}")
+        return {
+            "message": "Entrenamiento iniciado con éxito.",
+            "data": result,
+        }
+    except Exception as e:
+        logger.info(e)
+        raise HTTPException(status_code=500, detail=f"Error al iniciar el entrenamiento: {str(e)}")
+
+
+@app.get("/models", summary="Listar modelos disponibles")
+async def list_models():
+    """Lista todos los modelos entrenados disponibles con sus métricas"""
+    try:
+        models = get_available_models()
+        return {
+            "total_models": len(models),
+            "models": models,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Error listando modelos: {e}")
+        raise HTTPException(status_code=500, detail=f"Error listando modelos: {str(e)}")
+  
 
 def main():
     """Función principal para ejecutar la API FastAPI"""
