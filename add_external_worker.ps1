@@ -47,8 +47,7 @@ try {
                     "echo 'Esperando al cluster principal...' && " +
                     "sleep 10 && " +
                     "echo 'Conectando al cluster existente...' && " +
-                    "ray start --address=ray-head:6379 --num-cpus=$CPUs --object-manager-port=8076 " +
-                    "--node-manager-port=8077 --min-worker-port=10002 --max-worker-port=19999 && " +
+                    "ray start --address=ray-head:6379 --num-cpus=$CPUs && " +
                     "echo 'Worker externo conectado exitosamente!' && " +
                     "tail -f /dev/null"
     

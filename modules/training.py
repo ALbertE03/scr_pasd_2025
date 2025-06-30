@@ -3,79 +3,113 @@ import pandas as pd
 import numpy as np
 import time
 import warnings
-from sklearn.model_selection import train_test_split
+from ray.exceptions import RayActorError
+from sklearn.model_selection import StratifiedKFold, KFold
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
-from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, roc_auc_score, mean_squared_error, r2_score, mean_absolute_error
-from sklearn.linear_model import LogisticRegression, SGDClassifier, PassiveAggressiveClassifier, LinearRegression, Ridge, Lasso
+from sklearn.metrics import (accuracy_score, f1_score, precision_score, recall_score, roc_auc_score, 
+                             mean_squared_error, r2_score, mean_absolute_error)
+from sklearn.linear_model import (LogisticRegression, SGDClassifier, PassiveAggressiveClassifier, 
+                                  LinearRegression, Ridge, Lasso)
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.svm import SVC, LinearSVC
 from sklearn.naive_bayes import GaussianNB, BernoulliNB, MultinomialNB, ComplementNB
 from sklearn.tree import DecisionTreeClassifier
-from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, AdaBoostClassifier, ExtraTreesClassifier, RandomForestRegressor, GradientBoostingRegressor
+from sklearn.ensemble import (RandomForestClassifier, GradientBoostingClassifier, AdaBoostClassifier, 
+                              ExtraTreesClassifier, RandomForestRegressor, GradientBoostingRegressor)
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis, QuadraticDiscriminantAnalysis
 from sklearn.neural_network import MLPClassifier
-import logging
 from sklearn.multiclass import OneVsRestClassifier, OneVsOneClassifier
-logging.basicConfig(level=logging.INFO)
+import logging
+from collections import defaultdict
+
+# --- Configuration ---
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 
-@ray.remote
-def train_and_evaluate_model(
-    model_name: str,
-    pipeline: Pipeline,
-    X_train: pd.DataFrame,
-    y_train: pd.Series,
-    X_test: pd.DataFrame,
-    y_test: pd.Series,
-    metrics_to_calc: list,
-    problem_type: str
-):
-    try:
-        start_time = time.time()
-        pipeline.fit(X_train, y_train)
-        y_pred = pipeline.predict(X_test)
-        
-        scores = {}
-        for metric in metrics_to_calc:
-            try:
-                if problem_type == "Clasificación":
-                    if metric == "Accuracy": scores[metric] = accuracy_score(y_test, y_pred)
-                    elif "F1" in metric: scores[metric] = f1_score(y_test, y_pred, average='weighted')
-                    elif "Precision" in metric: scores[metric] = precision_score(y_test, y_pred, average='weighted')
-                    elif "Recall" in metric: scores[metric] = recall_score(y_test, y_pred, average='weighted')
-                    elif metric == "ROC-AUC":
-                        if hasattr(pipeline.named_steps['model'], "predict_proba"):
-                            if isinstance(pipeline.named_steps['model'], (OneVsRestClassifier, OneVsOneClassifier)):
-                                scores[metric] = "N/A for OvR/OvO wrapper"
-                            else:
-                                y_proba = pipeline.predict_proba(X_test)
-                                if y_proba.shape[1] == 2:
-                                    scores[metric] = roc_auc_score(y_test, y_proba[:, 1])
-                                else:
-                                    scores[metric] = roc_auc_score(y_test, y_proba, multi_class='ovr')
-                        else:
-                            scores[metric] = "N/A (no predict_proba)"
-                elif problem_type == "Regresión":
-                    if metric == 'RMSE': scores[metric] = np.sqrt(mean_squared_error(y_test, y_pred))
-                    elif metric == 'R2': scores[metric] = r2_score(y_test, y_pred)
-                    elif metric == 'MAE': scores[metric] = mean_absolute_error(y_test, y_pred)
-            except Exception as e:
-                scores[metric] = f"Error: {str(e)}"
 
-        scores['Training Time (s)'] = round(time.time() - start_time, 2)
-        print(f"[SUCCESS] Model {model_name} trained. Scores: {scores}")
-        return {"model": model_name, "status": "Success", "scores": scores, "pipeline": pipeline}
-    except Exception as e:
-        print(f"[FAILED] Model {model_name} failed. Error: {str(e)}")
-        return {"model": model_name, "status": "Failed", "error": str(e)}
+# SOLUCIÓN 3: Especificar recursos para el actor
+@ray.remote(num_cpus=1, max_restarts=-1, max_task_retries=-1)
+class TrainingActor:
+    """
+    Un Actor de Ray que encapsula la lógica de entrenamiento.
+    """
+    def __init__(self):
+        self.hostname = ray.util.get_node_ip_address()
+        logger.info(f"TrainingActor inicializado en el nodo {self.hostname}")
+
+    # SOLUCIÓN 1: Modificar la firma para aceptar componentes, no un pipeline completo
+    def train_and_evaluate_model(
+        self, task
+
+    ):
+        model_name = task["model_name"]
+        fold_idx = task["fold_idx"]
+        preprocessor = task["preprocessor"]
+        model = task["model"]
+        X_df_ref = task["X_ref"]
+        y_series_ref = task["y_ref"]
+        train_indices = task["train_indices"]
+        val_indices = task["val_indices"]
+        metrics_to_calc = task["metrics_to_calc"]
+        problem_type = task["problem_type"]
+        try:
+            # Construir el pipeline dentro del actor, que es más seguro para la serialización
+            pipeline = Pipeline(steps=[('preprocessor', preprocessor), ('model', model)])
+            
+            # Obtener los datos desde el object store de Ray
+            X_df = ray.get(X_df_ref)
+            y_series = ray.get(y_series_ref)
+
+            # Extraer los datos para el fold específico
+            X_train, y_train = X_df.iloc[train_indices], y_series.iloc[train_indices]
+            X_val, y_val = X_df.iloc[val_indices], y_series.iloc[val_indices]
+
+            start_time = time.time()
+            pipeline.fit(X_train, y_train)
+            y_pred = pipeline.predict(X_val)
+            
+            scores = {}
+            for metric in metrics_to_calc:
+                try:
+                    if problem_type == "Clasificación":
+                        if metric == "Accuracy": scores[metric] = accuracy_score(y_val, y_pred)
+                        elif "F1" in metric: scores[metric] = f1_score(y_val, y_pred, average='weighted')
+                        elif "Precision" in metric: scores[metric] = precision_score(y_val, y_pred, average='weighted')
+                        elif "Recall" in metric: scores[metric] = recall_score(y_val, y_pred, average='weighted')
+                        elif metric == "ROC-AUC":
+                            if hasattr(pipeline.named_steps['model'], "predict_proba"):
+                                if isinstance(pipeline.named_steps['model'], (OneVsRestClassifier, OneVsOneClassifier)):
+                                    scores[metric] = "N/A for OvR/OvO wrapper"
+                                else:
+                                    y_proba = pipeline.predict_proba(X_val)
+                                    if len(np.unique(y_val)) == 2:
+                                        scores[metric] = roc_auc_score(y_val, y_proba[:, 1])
+                                    else:
+                                        scores[metric] = roc_auc_score(y_val, y_proba, multi_class='ovr', average='weighted')
+                            else:
+                                scores[metric] = "N/A (no predict_proba)"
+                    elif problem_type == "Regresión":
+                        if metric == 'RMSE': scores[metric] = np.sqrt(mean_squared_error(y_val, y_pred))
+                        elif metric == 'R2': scores[metric] = r2_score(y_val, y_pred)
+                        elif metric == 'MAE': scores[metric] = mean_absolute_error(y_val, y_pred)
+                except Exception as e:
+                    scores[metric] = f"Metric Error: {str(e)}"
+
+            scores['Training Time (s)'] = round(time.time() - start_time, 2)
+            
+            logger.info(f"[SUCCESS] Actor en {self.hostname} terminó {model_name} - Fold {fold_idx+1}.")
+            return {"model": model_name, "fold": fold_idx, "status": "Success", "scores": scores, "hostname": self.hostname}
+        except Exception as e:
+            logger.error(f"[FAILED] Actor en {self.hostname} falló en {model_name} - Fold {fold_idx+1}. Error: {e}", exc_info=True)
+            return {"model": model_name, "fold": fold_idx, "status": "Failed", "error": str(e), "hostname": self.hostname}
 
 
 class Trainer:
-    def __init__(self, df, target_column, problem_type, metrics,  test_size,cv_folds, random_state, features_to_exclude, transform_target, selected_models, estrategia):
+    def __init__(self, df, target_column, problem_type, metrics, test_size, cv_folds, random_state, features_to_exclude, transform_target, selected_models, estrategia):
         self.df = df
         self.target_column = target_column
         self.problem_type = problem_type
@@ -104,59 +138,116 @@ class Trainer:
         }
         
         selected_base_models = {name: model for name, model in base_models.items() if name in self.selected_models}
-        
-        if self.problem_type == "Clasificación" and self.estrategia:
+        logger.info(f"Modelos seleccionados: {list(selected_base_models.keys())}")
+        if self.problem_type == "Clasificación" and self.estrategia and len(np.unique(self.df[self.target_column])) > 2:
             multiclass_models = {}
             for strategy in self.estrategia:
                 for name, model in selected_base_models.items():
                     if hasattr(model, 'predict_proba') or hasattr(model, 'decision_function'):
-                        if strategy == "One-vs-Rest":
-                            multiclass_models[f"{name}_OvR"] = OneVsRestClassifier(model)
-                        elif strategy == "One-vs-One":
-                            multiclass_models[f"{name}_OvO"] = OneVsOneClassifier(model)
+                        if strategy == "One-vs-Rest": multiclass_models[f"{name}_OvR"] = OneVsRestClassifier(model)
+                        elif strategy == "One-vs-One": multiclass_models[f"{name}_OvO"] = OneVsOneClassifier(model)
             return multiclass_models
+        
         return selected_base_models
-
+   
     def train(self):
         try:
             y = self.df[self.target_column]
             X = self.df.drop(columns=[self.target_column] + self.features_to_exclude)
             
-            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=self.test_size, random_state=self.random_state, stratify=y if self.problem_type == "Clasificación" else None)
-            if self.transform_target and self.problem_type == "Regresión":
-                try:
-                    X_train = np.log1p(X_train)
-                except:
-                    X_train = X_train
-            numeric_features = X_train.select_dtypes(include=np.number).columns.tolist()
-            categorical_features = X_train.select_dtypes(include=['object', 'category']).columns.tolist()
-
-            preprocessor = ColumnTransformer(transformers=[
-                ('num', StandardScaler(), numeric_features),
-                ('cat', OneHotEncoder(handle_unknown='ignore', sparse_output=False), categorical_features)], remainder='passthrough')
-            
+            numeric_features = X.select_dtypes(include=np.number).columns.tolist()
+            categorical_features = X.select_dtypes(include=['object', 'category']).columns.tolist()
+            preprocessor = ColumnTransformer(transformers=[('num', StandardScaler(), numeric_features), ('cat', OneHotEncoder(handle_unknown='ignore', sparse_output=False), categorical_features)], remainder='passthrough')
             models_to_train = self.get_models()
-            if not models_to_train:
-                raise ValueError("No se seleccionaron modelos válidos para entrenar.")
-
-            X_train_ref, y_train_ref, X_test_ref, y_test_ref = ray.put(X_train), ray.put(y_train), ray.put(X_test), ray.put(y_test)
             
-            results_futures = []
+            if self.problem_type == "Clasificación":
+                kf = StratifiedKFold(n_splits=self.cv_folds, shuffle=True, random_state=self.random_state)
+                split_generator = list(kf.split(X, y))
+            else:
+                kf = KFold(n_splits=self.cv_folds, shuffle=True, random_state=self.random_state)
+                split_generator = list(kf.split(X))
+
+ 
+            X_ref = ray.put(X)
+            y_ref = ray.put(y)
+
+            tasks_queue = []
             for name, model in models_to_train.items():
-                pipeline = Pipeline(steps=[('preprocessor', preprocessor), ('model', model)])
-                future = train_and_evaluate_model.remote(name, pipeline, X_train_ref, y_train_ref, X_test_ref, y_test_ref, self.metrics, self.problem_type)
-                results_futures.append(future)
+                for fold_idx, (train_indices, val_indices) in enumerate(split_generator):
+                    
+                    task = {
+                        "model_name": name,
+                        "fold_idx": fold_idx,
+                        "preprocessor": preprocessor,
+                        "model": model,
+                        "X_ref": X_ref,  
+                        "y_ref": y_ref,  
+                        "train_indices": train_indices,
+                        "val_indices": val_indices,
+                        "metrics_to_calc": self.metrics,       
+                        "problem_type": self.problem_type, 
+                        "retry_count": 0
+                    }
+                    tasks_queue.append(task)
+            
+            num_actors = int(ray.cluster_resources().get("CPU", 1))
+            actor_pool = [TrainingActor.remote() for _ in range(num_actors)]
+            logger.info(f"Creado un pool de {len(actor_pool)} actores. Procesando {len(tasks_queue)} tareas.")
 
-            raw_results = ray.get(results_futures)
+            results = []
+            active_futures = {}
+            actor_idx_round_robin = 0
+            
+            while tasks_queue or active_futures:
+                while tasks_queue and len(active_futures) < len(actor_pool):
+                    task = tasks_queue.pop(0)
+                    actor = actor_pool[actor_idx_round_robin]
+                    
+                    future = actor.train_and_evaluate_model.remote(
+                        task
+                    )
+                    active_futures[future] = (actor_idx_round_robin, task)
+                    actor_idx_round_robin = (actor_idx_round_robin + 1) % len(actor_pool)
 
+                ready_futures, _ = ray.wait(list(active_futures.keys()))
+                
+                for future in ready_futures:
+                    actor_idx, task = active_futures.pop(future)
+                    try:
+                        result = ray.get(future)
+                        results.append(result)
+                    except RayActorError as e:
+                        logger.error(f"¡El actor {actor_idx} ha muerto! Reintentando la tarea: {task['model_name']} fold {task['fold_idx']+1}. Error: {e}")
+                        actor_pool[actor_idx] = TrainingActor.remote()
+                        task['retry_count'] += 1
+                        if task['retry_count'] < 3:
+                           tasks_queue.insert(0, task)
+                        else:
+                           logger.critical(f"La tarea {task['model_name']} ha fallado 3 veces. Descartando.")
+                           results.append({"model": task['model_name'], "fold": task['fold_idx'], "status": "Failed - Max Retries"})
+
+            raw_results_by_model = defaultdict(list)
+            for res in results:
+                 if res.get('status') == 'Success':
+                    raw_results_by_model[res['model']].append(res['scores'])
+            logger.info("Entrenamiento y evaluación completados. Procesando resultados...")
+            logger.info(f"Resultados obtenidos: {len(raw_results_by_model)} modelos procesados.")
             final_results = []
-            for res in raw_results:
-                if 'pipeline' in res:
-                    del res['pipeline']
-                final_results.append(res)
+            for model_name, fold_scores_list in raw_results_by_model.items():
+                if not fold_scores_list:
+                    final_results.append({"model": model_name, "status": "Failed on all folds"})
+                    continue
+                scores_df = pd.DataFrame(fold_scores_list)
+                aggregated_scores = {}
+                for metric in scores_df.columns:
+                    mean_val = scores_df[metric].mean()
+                    std_val = scores_df[metric].std()
+                    aggregated_scores[f"{metric}_mean"] = round(mean_val, 4) if pd.notna(mean_val) else 'N/A'
+                    aggregated_scores[f"{metric}_std"] = round(std_val, 4) if pd.notna(std_val) else 'N/A'
+                final_results.append({"model": model_name, "status": "Success", "scores": aggregated_scores})
 
             return final_results
+
         except Exception as e:
-            print(f"ERROR FATAL en Trainer.train: {e}")
-            logger.error(f"ERROR FATAL en Trainer.train: {e}")
-           
+            logger.error(f"Error fatal en el Trainer: {e}", exc_info=True)
+            return [{"status": "Fatal Error", "error": str(e)}]

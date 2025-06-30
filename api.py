@@ -738,7 +738,7 @@ async def add_node_to_cluster(worker_name: str = Query(..., description="Nombre 
     """Agrega un nodo al cluster Ray (worker externo)"""
     try:
             
-        command = f"docker run -d --name ray_worker_{worker_name.lower().replace(" ","_")} --hostname ray_worker_{worker_name} --network scr_pasd_2025_ray-network -e RAY_HEAD_SERVICE_HOST=ray-head -e NODE_ROLE=worker -e LEADER_NODE=false -e FAILOVER_PRIORITY=3 -e ENABLE_AUTO_FAILOVER=false --shm-size=2gb scr_pasd_2025-ray-head bash -c 'echo Worker externo iniciando... && echo Esperando al cluster principal... && sleep 10 && echo Conectando al cluster existente... && ray start --address=ray-head:6379 --num-cpus={add_cpu} --object-manager-port=8076 --node-manager-port=8077 --min-worker-port=10002 --max-worker-port=19999 && echo Worker externo conectado exitosamente! && tail -f /dev/null'"
+        command = f"docker run -d --name ray_worker_{worker_name.lower().replace(" ","_")} --hostname ray_worker_{worker_name} --network scr_pasd_2025_ray-network -e RAY_HEAD_SERVICE_HOST=ray-head -e NODE_ROLE=worker -e LEADER_NODE=false -e FAILOVER_PRIORITY=3 -e ENABLE_AUTO_FAILOVER=false --shm-size=2gb scr_pasd_2025-ray-head bash -c 'echo Worker externo iniciando... && echo Esperando al cluster principal... && sleep 10 && echo Conectando al cluster existente... && ray start --address=ray-head:6379 --num-cpus={add_cpu} && echo Worker externo conectado exitosamente! && tail -f /dev/null'"
         result = subprocess.run(
             command,
             capture_output=True,
@@ -865,7 +865,6 @@ async def train(params: TrainingRequest):
         }
         trainer_actor = Trainer(**actor_params)
         result = trainer_actor.train()
-
         logger.info(f"Entrenamiento iniciado con ID: {result}")
         return {
             "message": "Entrenamiento iniciado con éxito.",

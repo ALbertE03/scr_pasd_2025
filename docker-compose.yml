@@ -23,10 +23,7 @@ services:
       --dashboard-host=0.0.0.0 
       --dashboard-port=8265 
       --num-cpus=2 
-      --object-manager-port=8076 
-      --node-manager-port=8077 
-      --min-worker-port=10002 
-      --max-worker-port=19999 &&
+      &&
       echo 'Ray head node started successfully' &&
       tail -f /dev/null
       "
@@ -113,10 +110,7 @@ services:
       ray start 
       --address=ray-head:6379 
       --num-cpus=2 
-      --object-manager-port=8076 
-      --node-manager-port=8077 
-      --min-worker-port=10002 
-      --max-worker-port=19999 && 
+      && 
       echo 'Ray worker 1 started successfully' &&
       tail -f /dev/null
       "
@@ -145,10 +139,7 @@ services:
       ray start 
       --address=ray-head:6379 
       --num-cpus=2 
-      --object-manager-port=8076 
-      --node-manager-port=8077 
-      --min-worker-port=10002 
-      --max-worker-port=19999 &&
+      &&
       echo 'Ray worker 2 started successfully' &&
       tail -f /dev/null
       "
@@ -177,10 +168,7 @@ services:
       ray start 
       --address=ray-head:6379 
       --num-cpus=2 
-      --object-manager-port=8076 
-      --node-manager-port=8077 
-      --min-worker-port=10002 
-      --max-worker-port=19999 &&
+      &&
       echo 'Ray worker 3 started successfully' &&
       tail -f /dev/null
       "

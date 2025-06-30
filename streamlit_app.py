@@ -4,8 +4,6 @@ Ray ML Cluster Dashboard
 
 import streamlit as st
 import time
-from datetime import datetime
-
 from modules.utils import initialize_session_state, load_custom_styles, get_unique_key
 from modules.cluster import render_cluster_status_tab
 from modules.views import (
