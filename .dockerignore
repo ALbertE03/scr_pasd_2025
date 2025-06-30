@@ -1,0 +1,17 @@
+# Ignorar el control de versiones de Git
+.git
+.gitignore
+
+# Ignorar entornos virtuales
+.venv
+venv/
+env/
+
+# Ignorar cachés de Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Otros archivos de configuración de IDEs
+.vscode/
+.idea/

@@ -5,7 +5,7 @@ import time
 import warnings
 from ray.exceptions import RayActorError
 from sklearn.model_selection import StratifiedKFold, KFold
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.preprocessing import StandardScaler, OneHotEncoder,MinMaxScaler
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import (accuracy_score, f1_score, precision_score, recall_score, roc_auc_score, 
@@ -31,20 +31,10 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 
 
-# SOLUCIÓN 3: Especificar recursos para el actor
-@ray.remote(num_cpus=1, max_restarts=-1, max_task_retries=-1)
-class TrainingActor:
-    """
-    Un Actor de Ray que encapsula la lógica de entrenamiento.
-    """
-    def __init__(self):
-        self.hostname = ray.util.get_node_ip_address()
-        logger.info(f"TrainingActor inicializado en el nodo {self.hostname}")
 
-    # SOLUCIÓN 1: Modificar la firma para aceptar componentes, no un pipeline completo
-    def train_and_evaluate_model(
-        self, task
-
+@ray.remote(num_cpus=1, max_retries=3)
+def train_and_evaluate_model(
+         task
     ):
         model_name = task["model_name"]
         fold_idx = task["fold_idx"]
@@ -57,14 +47,12 @@ class TrainingActor:
         metrics_to_calc = task["metrics_to_calc"]
         problem_type = task["problem_type"]
         try:
-            # Construir el pipeline dentro del actor, que es más seguro para la serialización
-            pipeline = Pipeline(steps=[('preprocessor', preprocessor), ('model', model)])
             
-            # Obtener los datos desde el object store de Ray
+            pipeline = Pipeline(steps=[('preprocessor', preprocessor), ('model', model)])
+
             X_df = ray.get(X_df_ref)
             y_series = ray.get(y_series_ref)
 
-            # Extraer los datos para el fold específico
             X_train, y_train = X_df.iloc[train_indices], y_series.iloc[train_indices]
             X_val, y_val = X_df.iloc[val_indices], y_series.iloc[val_indices]
 
@@ -100,12 +88,11 @@ class TrainingActor:
                     scores[metric] = f"Metric Error: {str(e)}"
 
             scores['Training Time (s)'] = round(time.time() - start_time, 2)
-            
-            logger.info(f"[SUCCESS] Actor en {self.hostname} terminó {model_name} - Fold {fold_idx+1}.")
-            return {"model": model_name, "fold": fold_idx, "status": "Success", "scores": scores, "hostname": self.hostname}
+            logger.info(f"[SUCCESS] Actor terminó {model_name} - Fold {fold_idx+1}.")
+            return {'model_name':model_name,'fold_idx':fold_idx,'shape_dataset':X_df.shape,"scores":scores}
         except Exception as e:
-            logger.error(f"[FAILED] Actor en {self.hostname} falló en {model_name} - Fold {fold_idx+1}. Error: {e}", exc_info=True)
-            return {"model": model_name, "fold": fold_idx, "status": "Failed", "error": str(e), "hostname": self.hostname}
+            logger.error(f"[FAILED] Actor falló en {model_name} - Fold {fold_idx+1}. Error: {e}", exc_info=True)
+            raise
 
 
 class Trainer:
@@ -157,7 +144,28 @@ class Trainer:
             
             numeric_features = X.select_dtypes(include=np.number).columns.tolist()
             categorical_features = X.select_dtypes(include=['object', 'category']).columns.tolist()
-            preprocessor = ColumnTransformer(transformers=[('num', StandardScaler(), numeric_features), ('cat', OneHotEncoder(handle_unknown='ignore', sparse_output=False), categorical_features)], remainder='passthrough')
+            models_to_train = self.get_models()
+            preprocessor_standard = ColumnTransformer(
+                transformers=[
+                    ('num', StandardScaler(), numeric_features), 
+                    ('cat', OneHotEncoder(handle_unknown='ignore', sparse_output=False), categorical_features)
+                ], 
+                remainder='passthrough'
+            )
+            
+  
+            preprocessor_non_negative = ColumnTransformer(
+                transformers=[
+                    ('num', MinMaxScaler(), numeric_features), 
+                    ('cat', OneHotEncoder(handle_unknown='ignore', sparse_output=False), categorical_features)
+                ], 
+                remainder='passthrough'
+            )
+
+        
+            non_negative_models = {"MultinomialNB", "ComplementNB"}
+            logger.info(f"Se usará MinMaxScaler para los modelos: {non_negative_models}")
+
             models_to_train = self.get_models()
             
             if self.problem_type == "Clasificación":
@@ -166,19 +174,25 @@ class Trainer:
             else:
                 kf = KFold(n_splits=self.cv_folds, shuffle=True, random_state=self.random_state)
                 split_generator = list(kf.split(X))
-
  
             X_ref = ray.put(X)
             y_ref = ray.put(y)
 
-            tasks_queue = []
+            futures = []
             for name, model in models_to_train.items():
+
+                base_model_name = name.split('_')[0]
+                
+                if base_model_name in non_negative_models:
+                    preprocessor_for_task = preprocessor_non_negative
+                else:
+                    preprocessor_for_task = preprocessor_standard
+
                 for fold_idx, (train_indices, val_indices) in enumerate(split_generator):
-                    
                     task = {
                         "model_name": name,
                         "fold_idx": fold_idx,
-                        "preprocessor": preprocessor,
+                        "preprocessor": preprocessor_for_task, 
                         "model": model,
                         "X_ref": X_ref,  
                         "y_ref": y_ref,  
@@ -186,64 +200,59 @@ class Trainer:
                         "val_indices": val_indices,
                         "metrics_to_calc": self.metrics,       
                         "problem_type": self.problem_type, 
-                        "retry_count": 0
                     }
-                    tasks_queue.append(task)
+                    future = train_and_evaluate_model.remote(task)
+                    futures.append(future)
             
-            num_actors = int(ray.cluster_resources().get("CPU", 1))
-            actor_pool = [TrainingActor.remote() for _ in range(num_actors)]
-            logger.info(f"Creado un pool de {len(actor_pool)} actores. Procesando {len(tasks_queue)} tareas.")
-
             results = []
             active_futures = {}
-            actor_idx_round_robin = 0
             
-            while tasks_queue or active_futures:
-                while tasks_queue and len(active_futures) < len(actor_pool):
-                    task = tasks_queue.pop(0)
-                    actor = actor_pool[actor_idx_round_robin]
-                    
-                    future = actor.train_and_evaluate_model.remote(
-                        task
-                    )
-                    active_futures[future] = (actor_idx_round_robin, task)
-                    actor_idx_round_robin = (actor_idx_round_robin + 1) % len(actor_pool)
-
-                ready_futures, _ = ray.wait(list(active_futures.keys()))
-                
-                for future in ready_futures:
-                    actor_idx, task = active_futures.pop(future)
-                    try:
-                        result = ray.get(future)
-                        results.append(result)
-                    except RayActorError as e:
-                        logger.error(f"¡El actor {actor_idx} ha muerto! Reintentando la tarea: {task['model_name']} fold {task['fold_idx']+1}. Error: {e}")
-                        actor_pool[actor_idx] = TrainingActor.remote()
-                        task['retry_count'] += 1
-                        if task['retry_count'] < 3:
-                           tasks_queue.insert(0, task)
-                        else:
-                           logger.critical(f"La tarea {task['model_name']} ha fallado 3 veces. Descartando.")
-                           results.append({"model": task['model_name'], "fold": task['fold_idx'], "status": "Failed - Max Retries"})
-
+            completed, failed = 0,0
+            while futures:
+                try:
+                    ready,not_ready = ray.wait(futures)
+                    for result in ready:
+                        try:
+                            info = ray.get(result)
+                            logger.info(info)
+                            active_futures[info['model_name']]=info
+                            results.append({'status':'Success',**info})
+                            completed+=1
+                        except Exception as e:
+                            failed+=1
+                    futures = not_ready
+                    if len(futures)>0 and len(ready)==0:
+                        time.sleep(5)
+                except Exception as e:
+                    logger.info(e)
+                    logger.info("ocurrio un error esperando resultados")
+                    break
+            logger.info("completado")
             raw_results_by_model = defaultdict(list)
             for res in results:
                  if res.get('status') == 'Success':
-                    raw_results_by_model[res['model']].append(res['scores'])
+                    raw_results_by_model[res['model_name']].append(res['scores'])
+            
             logger.info("Entrenamiento y evaluación completados. Procesando resultados...")
-            logger.info(f"Resultados obtenidos: {len(raw_results_by_model)} modelos procesados.")
+            logger.info(f"Resultados obtenidos: {len(raw_results_by_model)} modelos procesados con éxito en al menos un fold.")
+
             final_results = []
             for model_name, fold_scores_list in raw_results_by_model.items():
                 if not fold_scores_list:
-                    final_results.append({"model": model_name, "status": "Failed on all folds"})
-                    continue
+                    continue 
+                
                 scores_df = pd.DataFrame(fold_scores_list)
                 aggregated_scores = {}
-                for metric in scores_df.columns:
-                    mean_val = scores_df[metric].mean()
-                    std_val = scores_df[metric].std()
-                    aggregated_scores[f"{metric}_mean"] = round(mean_val, 4) if pd.notna(mean_val) else 'N/A'
-                    aggregated_scores[f"{metric}_std"] = round(std_val, 4) if pd.notna(std_val) else 'N/A'
+                for metric_name in scores_df.columns:
+                    numeric_series = pd.to_numeric(scores_df[metric_name], errors='coerce')
+                    if numeric_series.isnull().all():
+                        first_value = scores_df[metric_name].mode()
+                        aggregated_scores[metric_name] = first_value.iloc[0] if not first_value.empty else "N/A"
+                    else:
+                        mean_val = numeric_series.mean()
+                        std_val = numeric_series.std()
+                        aggregated_scores[f"{metric_name}_mean"] = round(mean_val, 4) if pd.notna(mean_val) else 'N/A'
+                        aggregated_scores[f"{metric_name}_std"] = round(std_val, 4) if pd.notna(std_val) else 'N/A'
                 final_results.append({"model": model_name, "status": "Success", "scores": aggregated_scores})
 
             return final_results

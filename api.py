@@ -839,7 +839,30 @@ class TrainingRequest(BaseModel):
     selected_models: List[str] = Field(..., description="Lista de nombres de modelos a entrenar")
     estrategia:List[str]
 
+import json
+import numpy as np
+from fastapi.responses import JSONResponse
 
+class NumpyJSONResponse(JSONResponse):
+    """
+    Una respuesta JSON personalizada para manejar tipos de datos de NumPy
+    que no son compatibles con JSON estándar.
+    """
+    def render(self, content: any) -> bytes:
+        class NumpyEncoder(json.JSONEncoder):
+            def default(self, obj):
+                if isinstance(obj, np.integer):
+                    return int(obj)
+                if isinstance(obj, np.floating):
+                    # Si es NaN o Inf, conviértelo a None (null en JSON)
+                    if np.isnan(obj) or np.isinf(obj):
+                        return None
+                    return float(obj)
+                if isinstance(obj, np.ndarray):
+                    return obj.tolist()
+                return super(NumpyEncoder, self).default(obj)
+
+        return json.dumps(content, cls=NumpyEncoder).encode("utf-8")
 @app.post('/train/oneDataset', summary='Entrena varios modelos en el mismo dataset')
 async def train(params: TrainingRequest):
     """
@@ -866,10 +889,11 @@ async def train(params: TrainingRequest):
         trainer_actor = Trainer(**actor_params)
         result = trainer_actor.train()
         logger.info(f"Entrenamiento iniciado con ID: {result}")
-        return {
+        response_data= {
             "message": "Entrenamiento iniciado con éxito.",
             "data": result,
         }
+        return NumpyJSONResponse(content=response_data)
     except Exception as e:
         logger.info(e)
         raise HTTPException(status_code=500, detail=f"Error al iniciar el entrenamiento: {str(e)}")

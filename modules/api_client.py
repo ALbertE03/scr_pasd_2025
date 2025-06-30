@@ -345,33 +345,7 @@ class APIClient:
         except Exception as e:
             return {"status": "error", "error": str(e)}
     
-    def run_distributed_training_advanced(self,dataset_name,
-                selected_models,
-                hyperparameters,
-                target_column,
-                metrics,
-                cv_folds,
-                test_size,
-                transform_target=None,
-                exclude_columns=None):
-        try:
-            payload = {
-                "dataset_name": dataset_name,
-                "selected_models": selected_models,
-                "hyperparameters": hyperparameters,
-                "target_column": target_column,
-                "metrics": metrics,
-                "cv_folds": cv_folds,
-                "test_size": test_size,
-                "transform_target": transform_target,
-                "exclude_columns": exclude_columns,
-            }
-            response = self.session.post(f"{self.base_url}/train/distributed/advanced", json=payload, timeout=120)
-            response.raise_for_status()
-            return {"status": "success", "data": response.json()}
-        except Exception as e:
-            return {"status": "error", "error": str(e)}
-        
+    
 def render_api_tab(api_client: APIClient):
     """Renderiza la pestaña de API"""
     st.header("🌐 API de Modelos ML")

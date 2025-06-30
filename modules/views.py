@@ -491,9 +491,10 @@ def render_advanced_training(cluster_status, api_client):
                         )
                 else:
                     st.info("verifica el dataset primero ")
+
     if start_training:
-        with results_container:
-            st.session_state.training_in_progress = True
+        st.session_state.training_in_progress = True
+        with st.container():  
             st.markdown("""
                 <div class="dashboard-container">
                     <h3>🔄 Entrenando Modelos en Paralelo</h3>
@@ -501,23 +502,56 @@ def render_advanced_training(cluster_status, api_client):
                 """, unsafe_allow_html=True)
             
             training_params = {
-            "df": st.session_state.current_dataset,
-            "target_column": target_column,
-            "problem_type": problem_type,
-            "metrics": metrics,
-            "test_size": test_size,
-            'cv_folds':cv_folds,
-            "random_state": random_state,
-            "features_to_exclude":features_to_exclude,
-            "transform_target": transform_target,
-            "selected_models": selected_models,
-            'estrategia':estrategia
+                "df": st.session_state.current_dataset,
+                "target_column": target_column,
+                "problem_type": problem_type,
+                "metrics": metrics,
+                "test_size": test_size,
+                'cv_folds': cv_folds,
+                "random_state": random_state,
+                "features_to_exclude": features_to_exclude,
+                "transform_target": transform_target,
+                "selected_models": selected_models,
+                'estrategia': estrategia
             }
+            
             with st.spinner("Enviando trabajo al clúster de Ray..."):
+                try:
                     response = api_client.start(training_params)
-                    
-                    st.write(response)
-                        
-                        
-                   
+                    if 'data' in response:
+                        plot_results(response['data'])  
+                    else:
+                        st.error("ocurrio un error")
+                except Exception as e:
 
+                    st.error(f"❌ Error al enviar el trabajo al clúster: {str(e)}")
+                    return
+
+
+
+def plot_results(data):
+    """Genera gráficos de resultados de entrenamiento usando todo el ancho"""
+    if not data:
+        st.warning("No hay datos para mostrar")
+        return
+    
+    st.markdown("## 📊 Resultados del Entrenamiento")
+    
+    tabs = st.tabs([f"Modelo: {x['model']}" for x in data])
+    
+    for i, model_data in enumerate(data):
+        with tabs[i]:
+            st.subheader(f"Modelo: {model_data['model']}")
+            
+
+            cols = st.columns(3)
+            for j, (metric, values) in enumerate(model_data['scores'].items()):
+                with cols[j % 3]:
+                    if values is None:
+                        st.metric(label=metric, value="N/A")
+                    elif isinstance(values, (int, float)):
+                        st.metric(label=metric, value=f"{values:.4f}")
+                    else:
+                        st.metric(label=metric, value=str(values))
+            
+            st.markdown("### 🔍 Otras visualizaciones")
