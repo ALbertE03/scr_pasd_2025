@@ -64,6 +64,8 @@ class APIClient:
         except Exception as e:
             print(f"Error en read: {str(e)}")
             return pd.DataFrame()
+
+            
     def health_check(self) -> Dict:
         """Verifica el estado de salud de la API"""
         try:

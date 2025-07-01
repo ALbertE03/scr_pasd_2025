@@ -3,6 +3,8 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import time
+import numpy as np
+import random
 classification_only_models = [
 
             # Modelos basados en árboles
@@ -437,14 +439,11 @@ def render_advanced_training(cluster_status, api_client):
             st.markdown("### 📏 Métricas de Evaluación")
             if problem_type == "Clasificación":
                 if classification_subtype == "Binaria":
-                    default_metrics = ["Accuracy", "ROC-AUC", "F1"]
-                else:
-                    default_metrics = ["Accuracy", "F1 (macro)", "Precision (macro)"]
+                    default_metrics = ["Accuracy", "ROC-AUC", "F1","Precision"]
                 
                 metrics = st.multiselect(
                     "Seleccione métricas:",
-                    options=["Accuracy", "Precision", "Recall", "F1", "ROC-AUC"] if classification_subtype == "Binaria" 
-                    else ["Accuracy", "Precision (macro)", "Recall (macro)", "F1 (macro)"],
+                    options=["Accuracy", "Precision", "Recall", "F1", "ROC-AUC",'matriz de confusion'],
                     default=default_metrics,
                     key="classification_metrics"
                 )
@@ -519,7 +518,7 @@ def render_advanced_training(cluster_status, api_client):
                 try:
                     response = api_client.start(training_params)
                     if 'data' in response:
-                        plot_results(response['data'])  
+                        plot_results(response['data'],metrics)  
                     else:
                         st.error("ocurrio un error")
                 except Exception as e:
@@ -528,30 +527,122 @@ def render_advanced_training(cluster_status, api_client):
                     return
 
 
-
-def plot_results(data):
-    """Genera gráficos de resultados de entrenamiento usando todo el ancho"""
+def plot_results(data, metrics):
+    """Genera gráficos de resultados de entrenamiento con matrices de confusión y comparativas."""
+    
     if not data:
         st.warning("No hay datos para mostrar")
         return
     
     st.markdown("## 📊 Resultados del Entrenamiento")
     
-    tabs = st.tabs([f"Modelo: {x['model']}" for x in data])
+    # --- Comparación entre modelos (fuera de las tabs) ---
+    st.markdown("### 📈 Comparación entre Modelos")
+    
+    # Crear DataFrame para comparación
+    comparison_data = []
+    for model in data:
+        model_metrics = {
+            'Modelo': model['model'],
+            'Folds Completados': f"{model.get('completed_folds', '?')}/{model.get('total_folds', '?')}"
+        }
+        
+        # Agregar métricas numéricas
+        for metric, value in model['scores'].items():
+            if isinstance(value, (int, float)):
+                model_metrics[metric] = value
+            elif isinstance(value, dict) and 'mean' in value:
+                model_metrics[metric] = value['mean']
+        
+        comparison_data.append(model_metrics)
+    
+    df_comparison = pd.DataFrame(comparison_data)
+    
+    
+    # Gráfico de comparación de métricas clave
+    if len(df_comparison) > 1:
+        metrics_to_plot = [m for m in df_comparison.columns if m not in ['Modelo', 'Folds Completados'] and 
+                          isinstance(df_comparison[m].iloc[0], (int, float))]
+        
+        if metrics_to_plot:
+            st.markdown("#### Comparación de Métricas Clave")
+            fig = px.bar(df_comparison.melt(id_vars=['Modelo'], value_vars=metrics_to_plot),
+                         x='Modelo', y='value', color='variable', barmode='group',
+                         labels={'value': 'Valor', 'variable': 'Métrica'})
+            st.plotly_chart(fig, use_container_width=True)
+    
+    # --- Tabs por modelo ---
+    st.markdown("### 🔍 Detalle por Modelo")
+    tabs = st.tabs([f"{x['model']}" for x in data])
     
     for i, model_data in enumerate(data):
         with tabs[i]:
             st.subheader(f"Modelo: {model_data['model']}")
             
-
-            cols = st.columns(3)
-            for j, (metric, values) in enumerate(model_data['scores'].items()):
-                with cols[j % 3]:
-                    if values is None:
-                        st.metric(label=metric, value="N/A")
-                    elif isinstance(values, (int, float)):
-                        st.metric(label=metric, value=f"{values:.4f}")
-                    else:
-                        st.metric(label=metric, value=str(values))
+            # Mostrar métricas principales
+            st.markdown("#### 📏 Métricas de Rendimiento")
+            cols_metrics = st.columns(3)
+            metric_count = 0
             
-            st.markdown("### 🔍 Otras visualizaciones")
+            for metric, value in model_data['scores'].items():
+                if metric == 'Confusion Matrix':
+                    continue
+                    
+                with cols_metrics[metric_count % 3]:
+                    if isinstance(value, (int, float)):
+                        st.metric(label=metric, value=f"{value:.4f}")
+                    elif isinstance(value, dict) and 'mean' in value:
+                        st.metric(label=metric, 
+                                 value=f"{value['mean']:.4f}",
+                                 delta=f"±{value['std']:.4f}" if 'std' in value else None)
+                    else:
+                        st.metric(label=metric, value=str(value))
+                    metric_count += 1
+            
+            # Mostrar matriz de confusión si está disponible
+            if 'Confusion Matrix' in model_data['scores']:
+                cm_data = model_data['scores']['Confusion Matrix']
+                
+                st.markdown("#### 🧮 Matriz de Confusión")
+                
+                if 'Confusion Matrix' in model_data['scores']:
+                            cm_data = model_data['scores']['Confusion Matrix']
+                            if isinstance(cm_data, dict) and 'matrix' in cm_data and 'labels' in cm_data:
+                                st.markdown("---")
+                                st.subheader("Matriz de Confusión")
+                                
+                                matrix = cm_data['matrix']
+                                labels = cm_data['labels']
+                                matrix_np = np.array(matrix)
+                                
+                                fig = go.Figure(data=go.Heatmap(
+                                    z=matrix_np,
+                                    x=[str(l) for l in labels], 
+                                    y=[str(l) for l in labels],
+                                    hoverongaps=False,
+                                    colorscale='Blues',
+                                    showscale=False
+                                ))
+                                
+                                annotations = []
+                                for r_idx, row in enumerate(matrix_np):
+                                    for c_idx, value in enumerate(row):
+                                        annotations.append(
+                                            go.layout.Annotation(
+                                                text=str(value),
+                                                x=str(labels[c_idx]), y=str(labels[r_idx]),
+                                                xref='x1', yref='y1', showarrow=False,
+                                                font=dict(color='white' if value > matrix_np.max() / 2 else 'black')
+                                            )
+                                        )
+                                
+                                fig.update_layout(
+                                    title_text='Matriz de Confusión',
+                                    xaxis_title="Predicción", yaxis_title="Real",
+                                    annotations=annotations,
+                                    xaxis=dict(side='bottom'), yaxis=dict(autorange='reversed')
+                                )
+                                st.plotly_chart(fig, use_container_width=True,key=f'{random.random()}')
+    
+                else:
+                    st.warning("Formato de matriz de confusión no reconocido")

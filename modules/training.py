@@ -3,12 +3,11 @@ import pandas as pd
 import numpy as np
 import time
 import warnings
-from ray.exceptions import RayActorError
 from sklearn.model_selection import StratifiedKFold, KFold
 from sklearn.preprocessing import StandardScaler, OneHotEncoder,MinMaxScaler
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
-from sklearn.metrics import (accuracy_score, f1_score, precision_score, recall_score, roc_auc_score, 
+from sklearn.metrics import (accuracy_score, f1_score, precision_score, recall_score, roc_auc_score, confusion_matrix,
                              mean_squared_error, r2_score, mean_absolute_error)
 from sklearn.linear_model import (LogisticRegression, SGDClassifier, PassiveAggressiveClassifier, 
                                   LinearRegression, Ridge, Lasso)
@@ -59,11 +58,18 @@ def train_and_evaluate_model(
             start_time = time.time()
             pipeline.fit(X_train, y_train)
             y_pred = pipeline.predict(X_val)
-            
+            class_labels = task['class_labels']
             scores = {}
             for metric in metrics_to_calc:
                 try:
+                    
                     if problem_type == "Clasificación":
+                        if metric == "matriz de confusion":
+                            if class_labels:
+                                cm = confusion_matrix(y_val, y_pred, labels=class_labels)
+                                scores[metric] = cm.tolist()
+                            else:
+                                scores[metric] = "N/A (labels missing)"
                         if metric == "Accuracy": scores[metric] = accuracy_score(y_val, y_pred)
                         elif "F1" in metric: scores[metric] = f1_score(y_val, y_pred, average='weighted')
                         elif "Precision" in metric: scores[metric] = precision_score(y_val, y_pred, average='weighted')
@@ -167,8 +173,9 @@ class Trainer:
             logger.info(f"Se usará MinMaxScaler para los modelos: {non_negative_models}")
 
             models_to_train = self.get_models()
-            
+            class_labels = None
             if self.problem_type == "Clasificación":
+                class_labels = sorted(y.unique().tolist())
                 kf = StratifiedKFold(n_splits=self.cv_folds, shuffle=True, random_state=self.random_state)
                 split_generator = list(kf.split(X, y))
             else:
@@ -196,6 +203,7 @@ class Trainer:
                         "model": model,
                         "X_ref": X_ref,  
                         "y_ref": y_ref,  
+                        'class_labels':class_labels,
                         "train_indices": train_indices,
                         "val_indices": val_indices,
                         "metrics_to_calc": self.metrics,       
@@ -243,20 +251,35 @@ class Trainer:
                 
                 scores_df = pd.DataFrame(fold_scores_list)
                 aggregated_scores = {}
+                if 'matriz de confusion' in self.metrics and class_labels:
+                    cm_list = [
+                        np.array(scores['matriz de confusion'])
+                        for scores in fold_scores_list
+                        if 'matriz de confusion' in scores and isinstance(scores['matriz de confusion'], list)
+                    ]
+                    if cm_list:
+                        sum_cm = np.sum(cm_list, axis=0)
+                        aggregated_scores['Confusion Matrix'] = {
+                            "matrix": sum_cm.astype(int).tolist(),
+                            "labels": class_labels
+                        }
+
+                scores_df = pd.DataFrame(fold_scores_list)
                 for metric_name in scores_df.columns:
+                    if metric_name == 'matriz de confusion': continue
+                    
                     numeric_series = pd.to_numeric(scores_df[metric_name], errors='coerce')
-                    if numeric_series.isnull().all():
-                        first_value = scores_df[metric_name].mode()
-                        aggregated_scores[metric_name] = first_value.iloc[0] if not first_value.empty else "N/A"
+                    if not numeric_series.isnull().all():
+                        aggregated_scores[f"{metric_name}_mean"] = round(numeric_series.mean(), 4)
+                        aggregated_scores[f"{metric_name}_std"] = round(numeric_series.std(), 4)
                     else:
-                        mean_val = numeric_series.mean()
-                        std_val = numeric_series.std()
-                        aggregated_scores[f"{metric_name}_mean"] = round(mean_val, 4) if pd.notna(mean_val) else 'N/A'
-                        aggregated_scores[f"{metric_name}_std"] = round(std_val, 4) if pd.notna(std_val) else 'N/A'
+                        aggregated_scores[metric_name] = scores_df[metric_name].mode().iloc[0] if not scores_df[metric_name].mode().empty else "N/A"
+                        
                 final_results.append({"model": model_name, "status": "Success", "scores": aggregated_scores})
 
             return final_results
-
         except Exception as e:
             logger.error(f"Error fatal en el Trainer: {e}", exc_info=True)
             return [{"status": "Fatal Error", "error": str(e)}]
+
+        
