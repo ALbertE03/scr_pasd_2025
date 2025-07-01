@@ -838,6 +838,7 @@ class TrainingRequest(BaseModel):
     transform_target: bool = False
     selected_models: List[str] = Field(..., description="Lista de nombres de modelos a entrenar")
     estrategia:List[str]
+    dataset_name:str
 
 import json
 import numpy as np
@@ -884,7 +885,8 @@ async def train(params: TrainingRequest):
             "features_to_exclude": params.features_to_exclude,
             "transform_target": params.transform_target,
             "selected_models": params.selected_models,
-            'estrategia':params.estrategia
+            'estrategia':params.estrategia,
+            'dataset_name':params.dataset_name
         }
         trainer_actor = Trainer(**actor_params)
         result = trainer_actor.train()

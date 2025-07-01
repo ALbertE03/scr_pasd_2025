@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import time
 import warnings
+import shutil
 from sklearn.model_selection import StratifiedKFold, KFold
 from sklearn.preprocessing import StandardScaler, OneHotEncoder,MinMaxScaler
 from sklearn.compose import ColumnTransformer
@@ -22,7 +23,11 @@ from sklearn.neural_network import MLPClassifier
 from sklearn.multiclass import OneVsRestClassifier, OneVsOneClassifier
 import logging
 from collections import defaultdict
-
+from datetime import datetime
+import pickle 
+import os  
+import subprocess
+from sklearn.ensemble import VotingClassifier, VotingRegressor
 # --- Configuration ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -57,6 +62,11 @@ def train_and_evaluate_model(
 
             start_time = time.time()
             pipeline.fit(X_train, y_train)
+            os.makedirs('temp', exist_ok=True)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            model_path = f'temp/{model_name}_{timestamp}_fold{fold_idx+1}.pkl'
+            with open(model_path, 'wb') as f:
+                pickle.dump(pipeline, f)
             y_pred = pipeline.predict(X_val)
             class_labels = task['class_labels']
             scores = {}
@@ -95,14 +105,15 @@ def train_and_evaluate_model(
 
             scores['Training Time (s)'] = round(time.time() - start_time, 2)
             logger.info(f"[SUCCESS] Actor terminó {model_name} - Fold {fold_idx+1}.")
-            return {'model_name':model_name,'fold_idx':fold_idx,'shape_dataset':X_df.shape,"scores":scores}
+            return {'model_name':model_name,'fold_idx':fold_idx,'shape_dataset':X_df.shape,"scores":scores,"path":model_path}
         except Exception as e:
+            
             logger.error(f"[FAILED] Actor falló en {model_name} - Fold {fold_idx+1}. Error: {e}", exc_info=True)
             raise
 
 
 class Trainer:
-    def __init__(self, df, target_column, problem_type, metrics, test_size, cv_folds, random_state, features_to_exclude, transform_target, selected_models, estrategia):
+    def __init__(self, df, target_column, problem_type, metrics, test_size, cv_folds, random_state, features_to_exclude, transform_target, selected_models, estrategia,dataset_name):
         self.df = df
         self.target_column = target_column
         self.problem_type = problem_type
@@ -114,6 +125,7 @@ class Trainer:
         self.transform_target = transform_target
         self.selected_models = selected_models
         self.estrategia = estrategia
+        self.dataset_name = dataset_name
 
     def get_models(self):
         rs = self.random_state
@@ -142,7 +154,116 @@ class Trainer:
             return multiclass_models
         
         return selected_base_models
-   
+    
+    def save(self, raw_fold_results, aggregated_results):
+    
+        base_results_dir = f'train_results/{self.dataset_name}'
+        models_dir = os.path.join(base_results_dir, 'models')
+        os.makedirs(models_dir, exist_ok=True)
+        logger.info(f"Saving results and models to: {base_results_dir}")
+
+        for result in raw_fold_results:
+            if result.get('status') == 'Success' and 'path' in result and result['path'] is not None:
+                temp_path = result['path']
+                if os.path.exists(temp_path):
+                    model_name = result['model_name']
+                    fold_idx = result['fold_idx']
+                    new_filename = f"{model_name}_fold{fold_idx+1}.pkl"
+                    permanent_path = os.path.join(models_dir, new_filename)
+                    try:
+                        shutil.move(temp_path, permanent_path)
+                        result['path'] = permanent_path 
+                    except Exception as e:
+                        logger.error(f"Failed to move model file {temp_path}. Error: {e}")
+        
+        summary_path = os.path.join(base_results_dir, 'summary_results.csv')
+        summary_df = pd.DataFrame(aggregated_results)
+        if not summary_df.empty and 'scores' in summary_df.columns:
+            scores_df = pd.json_normalize(summary_df['scores'])
+            summary_df = pd.concat([summary_df.drop(columns=['scores']), scores_df], axis=1)
+        summary_df.to_csv(summary_path, index=False)
+        logger.info(f"Saved aggregated results summary to {summary_path}")
+
+        raw_results_path = os.path.join(base_results_dir, 'raw_fold_results.pkl')
+        with open(raw_results_path, 'wb') as f:
+            pickle.dump(raw_fold_results, f)
+        logger.info(f"Saved raw fold-by-fold results to {raw_results_path}")
+
+        if os.path.exists('temp'):
+            try:
+                shutil.rmtree('temp')
+                logger.info("Cleaned up temporary 'temp' directory.")
+            except Exception as e:
+                logger.warning(f"Could not remove 'temp' directory. It may contain files from other processes. Error: {e}")
+
+
+    def agregate(self):
+        agrega = defaultdict(list)
+        path = os.path.join("train_results",self.dataset_name,'models')
+        models= os.listdir(path)
+        for model in models:
+                name = model.split("_")[0]
+                agrega[name].append(model)
+        logger.info(f"Modelos agregados: {agrega}")
+
+        return agrega
+    def create_voting_ensemble(self, voting_type='hard', weights=None):
+        """
+        Crea un ensemble por votación para cada grupo de modelos
+        
+        Args:
+            voting_type (str): 'soft' o 'hard' (solo para clasificación)
+            weights (list): Lista de pesos para los modelos (opcional)
+        """
+        models_dict = self.agregate()
+        ensembles = {}
+        path = os.path.join("train_results",self.dataset_name,'models')
+        for model_name, models in models_dict.items():
+            if not models:
+                continue
+ 
+            estimators = [(f"{model_name}_fold{idx}", model) 
+                         for idx, model in enumerate(models)]
+            
+            try:
+                if self.problem_type == 'Clasificación':
+                        
+                    ensemble = VotingClassifier(
+                        estimators=estimators,
+                        voting=voting_type,
+                        weights=weights,
+                        n_jobs=-1
+                    )
+                else:
+                    
+                    ensemble = VotingRegressor(
+                        estimators=estimators,
+                        weights=weights,
+                        n_jobs=-1
+                    )
+                
+                ensemble_name = f"{model_name}_voting_ensemble"
+                ensemble_path = os.path.join(path, f"{ensemble_name}.pkl")
+                with open(ensemble_path, 'wb') as f: 
+                    pickle.dump(ensemble, f)
+
+                ensembles[ensemble_name] = {
+                    'base_models': [name for name, _ in estimators],
+                    'ensemble_path': ensemble_path,
+                    'voting_type': voting_type if self.problem_type == 'Clasificación' else None,
+                    'weights': weights
+                }
+                
+                print(f"Ensemble creado: {ensemble_name} con {len(models)} modelos base")
+            
+            except Exception as e:
+                print(f"Error creando ensemble para {model_name}: {str(e)}")
+                continue
+        import re 
+        for i in os.listdir(path):
+                if re.match(r'.*fold\d*.pkl$', i):
+                    os.remove(os.path.join(path,i))     
+        return ensembles
     def train(self):
         try:
             y = self.df[self.target_column]
@@ -276,7 +397,8 @@ class Trainer:
                         aggregated_scores[metric_name] = scores_df[metric_name].mode().iloc[0] if not scores_df[metric_name].mode().empty else "N/A"
                         
                 final_results.append({"model": model_name, "status": "Success", "scores": aggregated_scores})
-
+            self.save(results, final_results)
+            self.create_voting_ensemble()
             return final_results
         except Exception as e:
             logger.error(f"Error fatal en el Trainer: {e}", exc_info=True)

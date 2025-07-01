@@ -5,6 +5,7 @@ import plotly.graph_objects as go
 import time
 import numpy as np
 import random
+
 classification_only_models = [
 
             # Modelos basados en árboles
@@ -294,9 +295,10 @@ def render_advanced_training(cluster_status, api_client):
                     st.dataframe(st.session_state.current_dataset.head(10))
                 
                 with st.expander("🧹 Manejo de Valores Faltantes", expanded=True):
-                    missing_strategy = st.radio(
+                    missing_strategy = st.selectbox(
                         "Estrategia para valores faltantes:",
                         options=[
+                            "ninguna",
                             "Eliminar filas con valores faltantes",
                             "Rellenar con la media/moda",
                             "Rellenar con valor específico"
@@ -511,9 +513,9 @@ def render_advanced_training(cluster_status, api_client):
                 "features_to_exclude": features_to_exclude,
                 "transform_target": transform_target,
                 "selected_models": selected_models,
-                'estrategia': estrategia
+                'estrategia': estrategia,
+                "dataset_name":uploaded_file.name
             }
-            
             with st.spinner("Enviando trabajo al clúster de Ray..."):
                 try:
                     response = api_client.start(training_params)
@@ -536,18 +538,15 @@ def plot_results(data, metrics):
     
     st.markdown("## 📊 Resultados del Entrenamiento")
     
-    # --- Comparación entre modelos (fuera de las tabs) ---
     st.markdown("### 📈 Comparación entre Modelos")
     
-    # Crear DataFrame para comparación
     comparison_data = []
     for model in data:
         model_metrics = {
             'Modelo': model['model'],
             'Folds Completados': f"{model.get('completed_folds', '?')}/{model.get('total_folds', '?')}"
         }
-        
-        # Agregar métricas numéricas
+
         for metric, value in model['scores'].items():
             if isinstance(value, (int, float)):
                 model_metrics[metric] = value
@@ -558,8 +557,6 @@ def plot_results(data, metrics):
     
     df_comparison = pd.DataFrame(comparison_data)
     
-    
-    # Gráfico de comparación de métricas clave
     if len(df_comparison) > 1:
         metrics_to_plot = [m for m in df_comparison.columns if m not in ['Modelo', 'Folds Completados'] and 
                           isinstance(df_comparison[m].iloc[0], (int, float))]
@@ -571,15 +568,13 @@ def plot_results(data, metrics):
                          labels={'value': 'Valor', 'variable': 'Métrica'})
             st.plotly_chart(fig, use_container_width=True)
     
-    # --- Tabs por modelo ---
     st.markdown("### 🔍 Detalle por Modelo")
     tabs = st.tabs([f"{x['model']}" for x in data])
     
     for i, model_data in enumerate(data):
         with tabs[i]:
             st.subheader(f"Modelo: {model_data['model']}")
-            
-            # Mostrar métricas principales
+ 
             st.markdown("#### 📏 Métricas de Rendimiento")
             cols_metrics = st.columns(3)
             metric_count = 0
@@ -599,7 +594,7 @@ def plot_results(data, metrics):
                         st.metric(label=metric, value=str(value))
                     metric_count += 1
             
-            # Mostrar matriz de confusión si está disponible
+
             if 'Confusion Matrix' in model_data['scores']:
                 cm_data = model_data['scores']['Confusion Matrix']
                 
@@ -609,7 +604,6 @@ def plot_results(data, metrics):
                             cm_data = model_data['scores']['Confusion Matrix']
                             if isinstance(cm_data, dict) and 'matrix' in cm_data and 'labels' in cm_data:
                                 st.markdown("---")
-                                st.subheader("Matriz de Confusión")
                                 
                                 matrix = cm_data['matrix']
                                 labels = cm_data['labels']
