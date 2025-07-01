@@ -448,16 +448,13 @@ def render_explore_models_tab(api_client: APIClient):
                     col_info1, col_info2 = st.columns(2)
                     with col_info1:
                         st.metric("Dataset", model_info.get("dataset", "N/A"))
-                        st.metric("Accuracy", f"{model_info.get('accuracy', 0):.4f}")
+                        st.metric("Accuracy", f"{model_info['scores'].get('Accuracy_mean', 0):.4f}")
                     
                     with col_info2:
-                        st.metric("Tiempo Entrenamiento", f"{model_info.get('training_time', 0):.2f}s")
+                        st.metric("Tiempo Entrenamiento", f"{model_info['scores'].get('Training Time (s)_mean', 0):.2f}s")
                         st.metric("Tamaño Archivo", f"{model_info.get('file_size_mb', 0):.2f} MB")
                     
                     col_btn1, col_btn2 = st.columns(2)
-                    with col_btn1:
-                        if st.button(f"📋 Detalles", key=f"details_{model_name}"):
-                            show_model_details(api_client, model_name)
                     
                     with col_btn2:
                         if st.button(f"🗑️ Eliminar", key=f"delete_{model_name}", type="secondary"):
@@ -473,40 +470,7 @@ def render_explore_models_tab(api_client: APIClient):
         st.info("No hay modelos que coincidan con los filtros seleccionados.")
 
 
-def show_model_details(api_client: APIClient, model_name: str):
-    """Muestra detalles detallados de un modelo"""
-    model_info_response = api_client.get_model_info(model_name)
-    
-    if model_info_response["status"] == "error":
-        st.error(f"Error obteniendo detalles: {model_info_response['error']}")
-        return
-    
-    model_info = model_info_response["data"]
-    
-    with st.expander(f"📋 Detalles de {model_name}", expanded=True):
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.dataframe({
-                "Nombre": model_info.get("model_name"),
-                "Dataset": model_info.get("dataset"),
-                "Tipo": model_info.get("model_type", "N/A"),
-                "Archivo": model_info.get("file_path"),
-                "Directorio": model_info.get("directory")
-            })
-        
-        with col2:
-            st.dataframe({
-                "Accuracy": model_info.get("accuracy"),
-                "CV Mean": model_info.get("cv_mean"),
-                "CV Std": model_info.get("cv_std"),
-                "Tiempo Entrenamiento": model_info.get("training_time"),
-                "Timestamp": model_info.get("timestamp")
-            })
-        
-        if "model_parameters" in model_info:
-            st.subheader("Parámetros del Modelo")
-            st.json(model_info["model_parameters"])
+
 
 
 def render_predictions_tab(api_client: APIClient):

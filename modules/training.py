@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import time
 import warnings
+import json
 import shutil
 from sklearn.model_selection import StratifiedKFold, KFold
 from sklearn.preprocessing import StandardScaler, OneHotEncoder,MinMaxScaler
@@ -125,7 +126,7 @@ class Trainer:
         self.transform_target = transform_target
         self.selected_models = selected_models
         self.estrategia = estrategia
-        self.dataset_name = dataset_name
+        self.dataset_name = dataset_name.replace(".csv","")
 
     def get_models(self):
         rs = self.random_state
@@ -175,7 +176,15 @@ class Trainer:
                         result['path'] = permanent_path 
                     except Exception as e:
                         logger.error(f"Failed to move model file {temp_path}. Error: {e}")
-        
+        aux = {}
+        with open(os.path.join('train_results',self.dataset_name,f'training_{self.dataset_name}_result.json'),'r') as f:
+            d=json.laod(f)
+
+        for p in aggregated_results:
+            aux[p['model']] = {**p}
+        d.update(aux)
+        with open(os.path.join('train_results',self.dataset_name,f'training_{self.dataset_name}_result.json'),'w') as f:
+            json.dump(d,f)
         summary_path = os.path.join(base_results_dir, 'summary_results.csv')
         summary_df = pd.DataFrame(aggregated_results)
         if not summary_df.empty and 'scores' in summary_df.columns:

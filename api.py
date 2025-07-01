@@ -145,148 +145,94 @@ def get_inference_stats(model_name: str = None) -> Dict:
 
 def load_model_from_file(model_name: str, dataset_name: str = None, models_dir: str = "models"):
     """Carga un modelo desde archivo con búsqueda mejorada"""
-    model_path = None
+    path = 'train_results'
+    os.makedirs(path, exist_ok=True)
+ 
+    if not os.listdir(path):
+        logger.info("No se encontraron datasets en el directorio train_result")
+        return "",""
+    
+    for dataset in os.listdir(path):
+        path1 = os.path.join(path, dataset)
+     
+        if not os.path.isdir(path1):
+            continue
+            
+        for model_file_name in os.listdir(path1):
+            if not model_file_name.endswith(".pkl"):
+                continue
+            if model_file_name.split("_")[0]!=model_name:
+                continue
+            model_path = os.path.join(path1, model_file_name)        
+            try:
+                with open(model_path, 'rb') as f:
+                    model = pickle.load(f)
+                logger.info(f"Modelo {model_name} cargado desde {model_path}")
+                return model, model_path
+            except Exception as e:
+                raise Exception(f"Error cargando modelo {model_name} desde {model_path}: {str(e)}")
 
-    search_paths = []
 
-    if dataset_name:
-        search_paths.extend([
-            os.path.join("models", dataset_name, f"{model_name}.pkl"),
-            os.path.join(f"models_{dataset_name}", f"{model_name}.pkl"),
-            os.path.join("training_results", f"models_{dataset_name}", f"{model_name}.pkl")
-        ])
-    
-    search_paths.extend([
-        os.path.join("models", f"{model_name}.pkl"),
-        os.path.join("models", "iris", f"{model_name}.pkl"),
-        os.path.join("models", "wine", f"{model_name}.pkl"),
-        os.path.join("models", "breast_cancer", f"{model_name}.pkl"),
-        os.path.join("models", "digits", f"{model_name}.pkl"),
-        os.path.join("models_iris", f"{model_name}.pkl"),
-        os.path.join("models_wine", f"{model_name}.pkl"),
-        os.path.join("models_breast_cancer", f"{model_name}.pkl"),
-        os.path.join("models_digits", f"{model_name}.pkl"),
-        os.path.join("training_results", "models_iris", f"{model_name}.pkl"),
-        os.path.join("training_results", "models_wine", f"{model_name}.pkl"),
-        os.path.join("training_results", "models_breast_cancer", f"{model_name}.pkl"),
-        os.path.join("training_results", "models_digits", f"{model_name}.pkl")
-    ])
-    
-    for path in search_paths:
-        if os.path.exists(path):
-            model_path = path
-            break
-    
-    if not model_path:
-        available_models = get_available_models()
-        available_names = list(available_models.keys())
-        raise FileNotFoundError(
-            f"Modelo {model_name} no encontrado. "
-            f"Modelos disponibles: {available_names[:10]}{'...' if len(available_names) > 10 else ''}"
-        )
-    
-    try:
-        with open(model_path, 'rb') as f:
-            model = pickle.load(f)
-        logger.info(f"Modelo {model_name} cargado desde {model_path}")
-        return model, model_path
-    except Exception as e:
-        raise Exception(f"Error cargando modelo {model_name} desde {model_path}: {str(e)}")
 
 
 def get_available_models() -> Dict[str, Dict]:
     """Obtiene información de todos los modelos disponibles con búsqueda exhaustiva"""
     models_info = {}
+    path = 'train_results'
+
+    os.makedirs(path, exist_ok=True)
+ 
+    if not os.listdir(path):
+        logger.info("No se encontraron datasets en el directorio train_result")
+        return models_info
     
-    search_directories = [
-        "models",
-        "models_iris", "models_wine", "models_breast_cancer", "models_digits",
-        os.path.join("training_results", "models_iris"),
-        os.path.join("training_results", "models_wine"),
-        os.path.join("training_results", "models_breast_cancer"),
-        os.path.join("training_results", "models_digits")
-    ]
-    
-    base_models_dir = Path("models")
-    if base_models_dir.exists():
-        for subdir in base_models_dir.iterdir():
-            if subdir.is_dir():
-                search_directories.append(str(subdir))
-    
-    for directory in search_directories:
-        directory_path = Path(directory)
-        if not directory_path.exists():
+    for dataset in os.listdir(path):
+        path1 = os.path.join(path, dataset,'models')
+     
+        if not os.path.isdir(path1):
             continue
-
-        if "iris" in directory:
-            dataset_name = "iris"
-        elif "wine" in directory:
-            dataset_name = "wine"
-        elif "breast_cancer" in directory:
-            dataset_name = "breast_cancer"
-        elif "digits" in directory:
-            dataset_name = "digits"
-        else:
-            dataset_name = directory_path.name if directory_path.name != "models" else "unknown"
-        
-        for model_file in directory_path.glob("*.pkl"):
-            model_name = model_file.stem
             
-
-            unique_model_name = f"{dataset_name}_{model_name}" if dataset_name != "unknown" else model_name
-
-            if model_name in [info.get("model_name") for info in models_info.values()]:
-                unique_model_name = f"{dataset_name}_{model_name}"
+        for model_file_name in os.listdir(path1):
+            if not model_file_name.endswith(".pkl"):
+                continue
             
-            model_info = {
-                "model_name": model_name,
-                "unique_name": unique_model_name,
-                "dataset": dataset_name,
-                "file_path": str(model_file),
-                "directory": str(directory_path),
-                "file_size_mb": round(model_file.stat().st_size / (1024*1024), 2),
-                "modified_time": datetime.fromtimestamp(model_file.stat().st_mtime).isoformat()
-            }
-            
-            result_files = [
-                f"results_{dataset_name}.json",
-                os.path.join("training_results", f"results_{dataset_name}.json")
-            ]
-            for result_file in result_files:
-                if os.path.exists(result_file):
+            model_path = os.path.join(path1, model_file_name)
+            model_file = Path(model_path)
+            logger.info(f"Procesando modelo: {model_file_name} en {path1}")
+            try:
+                
+                
+                unique_name = f"{model_file_name.split('_')[0]}_{dataset}"
+                model_info = {
+                    "model_name": unique_name,
+                    "dataset": dataset,
+                    "file_path": str(model_path),
+                    "directory": str(path1),
+                    "file_size_mb": round(model_file.stat().st_size / (1024*1024), 2),
+                    "modified_time": datetime.fromtimestamp(model_file.stat().st_mtime).isoformat()
+                }
+                
+                for result_file_name in os.listdir(os.path.join(path,dataset)):
+                    if not result_file_name.endswith('.json'):
+                        continue
+
+                    result_file_path = os.path.join(os.path.join(path,dataset), result_file_name)
                     try:
-                        with open(result_file, 'r') as f:
+                        with open(result_file_path, 'r') as f:
                             results = json.load(f)
-                            
-                            # Handle different formats of results file
-                            if model_name in results:
-                                # Standard format where model name is a direct key
-                                result = results[model_name]
-                                model_info.update({
-                                    "accuracy": result.get("accuracy", 0),
-                                    "cv_mean": result.get("cv_mean", 0),
-                                    "cv_std": result.get("cv_std", 0),
-                                    "training_time": result.get("training_time", 0),
-                                    "status": result.get("status", "success"),
-                                    "timestamp": result.get("timestamp", "")
-                                })
-                                break
-                            elif dataset_name in results and model_name in results[dataset_name]:
-                                # Format from run function where dataset is the top-level key
-                                result = results[dataset_name][model_name]
-                                model_info.update({
-                                    "accuracy": result.get("val_accuracy", result.get("accuracy", 0)),
-                                    "cv_mean": result.get("val_accuracy", 0),
-                                    "cv_std": 0.0,
-                                    "training_time": result.get("training_time", 0),
-                                    "status": "success",
-                                    "timestamp": datetime.now().isoformat()
-                                })
-                                break
+                            logger.info(results)
+                            if model_file_name.split('_')[0] in results:
+                                result = results[model_file_name.split("_")[0]]
+                                model_info.update(result)
+                                
                     except Exception as e:
-                        logger.warning(f"Error cargando métricas desde {result_file}: {e}")
+                        logger.warning(f"Error cargando métricas desde {result_file_path}: {e}")
+                
+                models_info[unique_name] = model_info
             
-            models_info[unique_model_name] = model_info
+            except Exception as e:
+                logger.warning(f"Error cargando modelo {model_path}: {e}")
+                continue
     
     logger.info(f"Encontrados {len(models_info)} modelos en total")
     return models_info
@@ -337,7 +283,7 @@ async def get_model_info(model_name: str):
         models = get_available_models()
         
         if model_name not in models:
-            matching_models = [k for k in models.keys() if model_name in k or k.endswith(f"_{model_name}")]
+            matching_models = [k for k in models.keys() if model_name in k or k.startswith(f"{model_name}")]
             if not matching_models:
                 available_models = list(models.keys())
                 raise HTTPException(
@@ -351,7 +297,7 @@ async def get_model_info(model_name: str):
         try:
             model, model_path = load_model_from_file(
                 model_info["model_name"], 
-                model_info.get("dataset")
+                model_info.get("dataset",'')
             )
             model_info["model_type"] = type(model).__name__
             model_info["model_parameters"] = getattr(model, 'get_params', lambda: {})()
@@ -481,28 +427,37 @@ async def delete_model(model_name: str):
         models = get_available_models()
         logger.info(f"Total de modelos disponibles: {len(models)}")
 
-        model_key = None
         if model_name in models:
             model_key = model_name
             logger.info(f"Modelo encontrado exactamente: {model_key}")
         else:
-            matching_models = [k for k in models.keys() if 
-                             model_name in k or 
-                             k.endswith(f"_{model_name}") or
-                             k.startswith(f"{model_name}_")]
-            if matching_models:
-                model_key = matching_models[0]
-                logger.info(f"Modelo encontrado por coincidencia parcial: {model_key}")
-            else:
+            matching_models = []
+
+            requested_parts = model_name.lower().split('_')
+            
+            for model_key in models.keys():
+                model_parts = model_key.lower().split('_')
+
+                if all(part in model_parts for part in requested_parts):
+                    matching_models.append(model_key)
+            
+            if not matching_models:
                 logger.warning(f"No se encontraron coincidencias para modelo: {model_name}")
-        
-        if not model_key:
-            available_models = list(models.keys())
-            logger.warning(f"Modelo no encontrado. Disponibles: {available_models}")
-            raise HTTPException(
-                status_code=404, 
-                detail=f"Modelo {model_name} no encontrado. Modelos disponibles: {available_models[:10]}{'...' if len(available_models) > 10 else ''}"
-            )
+                available_models = list(models.keys())
+                raise HTTPException(
+                    status_code=404, 
+                    detail=f"Modelo {model_name} no encontrado. Modelos disponibles: {available_models[:10]}{'...' if len(available_models) > 10 else ''}"
+                )
+                
+            if len(matching_models) > 1:
+                logger.warning(f"Múltiples modelos coincidentes: {matching_models}")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Múltiples modelos coincidentes ({len(matching_models)}). Por favor especifique mejor: {matching_models}"
+                )
+                
+            model_key = matching_models[0]
+            logger.info(f"Modelo encontrado por coincidencia parcial: {model_key}")
         
         model_info = models[model_key]
         model_path = model_info["file_path"]
@@ -512,12 +467,12 @@ async def delete_model(model_name: str):
             try:
                 os.remove(model_path)
                 logger.info(f"Modelo {model_key} eliminado exitosamente de {model_path}")
-                  # Limpiar caché si existe
+                
                 global models_cache
-                models_cache = {}  # Limpiar toda la caché para forzar recargar todos los modelos
+                models_cache = {} 
                 logger.info(f"Cache de modelos limpiada completamente")
                 
-                # Verificar que el modelo ya no existe
+
                 if os.path.exists(model_path):
                     logger.error(f"ERROR: El archivo {model_path} todavía existe después de intentar eliminarlo")
                     raise HTTPException(
@@ -556,7 +511,6 @@ async def delete_model(model_name: str):
     except Exception as e:
         logger.error(f"Error eliminando modelo {model_name}: {e}")
         raise HTTPException(status_code=500, detail=f"Error eliminando modelo: {str(e)}")
-
 
 @app.post("/predict/batch", summary="Predicciones en lote desde archivo")
 async def predict_batch(
