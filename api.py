@@ -5,7 +5,7 @@ import logging
 from datetime import datetime
 from typing import Dict, List, Optional, Any, Union
 from pathlib import Path
-
+import time
 import numpy as np
 import pandas as pd
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, File, UploadFile, Query
@@ -46,7 +46,7 @@ inference_stats_file = "inference_stats.json"
 
 @app.get("/favicon.ico", include_in_schema=False)
 async def favicon():
-    """Retorna un favicon vacío para evitar errores 404 en navegadores"""
+    """Retorna un favicon """
     return JSONResponse(content={"message": "No favicon available"}, status_code=204)
 
 
@@ -55,14 +55,9 @@ class PredictionRequest(BaseModel):
     features: List[List[float]] = Field(..., description="Características para predicción")
     return_probabilities: bool = Field(False, description="Retornar probabilidades además de predicciones")
 
-
-
-
 class ModelInfo(BaseModel):
     model_name: str
     accuracy: float
-    cv_mean: float
-    cv_std: float
     training_time: float
     timestamp: str
     status: str
@@ -149,21 +144,33 @@ def load_model_from_file(model_name: str, dataset_name: str = None, models_dir: 
     os.makedirs(path, exist_ok=True)
  
     if not os.listdir(path):
-        logger.info("No se encontraron datasets en el directorio train_result")
+        logger.info("No se encontraron datasets en el directorio train_results")
         return "",""
+    
+    # Extract the base model name if it contains dataset info
+    base_model_name = model_name.split("_")[0] if "_" in model_name else model_name
     
     for dataset in os.listdir(path):
         path1 = os.path.join(path, dataset)
      
         if not os.path.isdir(path1):
             continue
+        
+        # Look in the models subdirectory within each dataset
+        models_path = os.path.join(path1, 'models')
+        if not os.path.exists(models_path) or not os.path.isdir(models_path):
+            continue
             
-        for model_file_name in os.listdir(path1):
+        for model_file_name in os.listdir(models_path):
             if not model_file_name.endswith(".pkl"):
                 continue
-            if model_file_name.split("_")[0]!=model_name:
+            
+            # Check if the base model name matches the beginning of the file name
+            file_base_name = model_file_name.split("_")[0]
+            if file_base_name != base_model_name:
                 continue
-            model_path = os.path.join(path1, model_file_name)        
+                
+            model_path = os.path.join(models_path, model_file_name)        
             try:
                 with open(model_path, 'rb') as f:
                     model = pickle.load(f)
@@ -171,7 +178,7 @@ def load_model_from_file(model_name: str, dataset_name: str = None, models_dir: 
                 return model, model_path
             except Exception as e:
                 raise Exception(f"Error cargando modelo {model_name} desde {model_path}: {str(e)}")
-
+    raise FileNotFoundError(f"Modelo {model_name} no encontrado en train_results")
 
 
 
@@ -209,7 +216,8 @@ def get_available_models() -> Dict[str, Dict]:
                     "file_path": str(model_path),
                     "directory": str(path1),
                     "file_size_mb": round(model_file.stat().st_size / (1024*1024), 2),
-                    "modified_time": datetime.fromtimestamp(model_file.stat().st_mtime).isoformat()
+                    "modified_time": datetime.fromtimestamp(model_file.stat().st_mtime).isoformat(),
+                    "scores": {}  # Initialize with empty scores dict
                 }
                 
                 for result_file_name in os.listdir(os.path.join(path,dataset)):
@@ -220,10 +228,34 @@ def get_available_models() -> Dict[str, Dict]:
                     try:
                         with open(result_file_path, 'r') as f:
                             results = json.load(f)
-                            logger.info(results)
-                            if model_file_name.split('_')[0] in results:
-                                result = results[model_file_name.split("_")[0]]
+                            logger.info(f"Loaded results from {result_file_path}")
+                            
+                            # Extract base model name from file (e.g., "RandomForest" from "RandomForest.pkl")
+                            model_key = model_file_name.replace('.pkl', '').split('_')[0]
+                            
+                            if model_key in results:
+                                result = results[model_key]
+                                logger.info(f"Found result for model {model_key} with scores: {result.get('scores', {})}")
+                                
+                                # Update model_info with result data, but preserve the unique_name and dataset
+                                original_model_name = model_info['model_name']
+                                original_dataset = model_info['dataset']
+                                
                                 model_info.update(result)
+                                
+                                # Restore the unique identifiers
+                                model_info['model_name'] = original_model_name
+                                model_info['dataset'] = original_dataset
+                                
+                                # Ensure scores structure exists and is valid
+                                if 'scores' in result and isinstance(result['scores'], dict):
+                                    model_info['scores'] = result['scores']
+                                    logger.info(f"Successfully loaded scores for {model_key}: {model_info['scores']}")
+                                else:
+                                    logger.warning(f"Model {model_key} missing or invalid 'scores' in result data")
+                                    model_info['scores'] = {}
+                                
+                                break  # Found the result, no need to check other files
                                 
                     except Exception as e:
                         logger.warning(f"Error cargando métricas desde {result_file_path}: {e}")
@@ -318,23 +350,16 @@ async def get_model_info(model_name: str):
 @app.post("/predict", response_model=PredictionResponse, summary="Realizar predicciones")
 async def predict(request: PredictionRequest):
     """Realiza predicciones usando un modelo entrenado"""
-    import time
-    start_time = time.time()
     
+    start_time = time.time()
+    logger.error('enviando {} features para predicción'.format(request.features))
+    logger.error('modelo: {}'.format(request.model_name))
     try:
         models = get_available_models()
 
         model_key = None
         if request.model_name in models:
             model_key = request.model_name
-        else:
-            matching_models = [k for k in models.keys() if 
-                             request.model_name in k or 
-                             k.endswith(f"_{request.model_name}") or
-                             k.startswith(f"{request.model_name}_")]
-            if matching_models:
-                model_key = matching_models[0]
-                logger.info(f"Usando modelo {model_key} para solicitud de {request.model_name}")
         
         if not model_key:
             available_models = list(models.keys())
@@ -351,8 +376,45 @@ async def predict(request: PredictionRequest):
 
         X = np.array(request.features)
         logger.info(f"Realizando predicción con {X.shape[0]} muestras y {X.shape[1]} características")
-        predictions = model.predict(X)
+        logger.info(X)
+        columns = model_info.get('columns', [])
+        target = model_info.get('target', '')
+        predictions = None
+        prediction_error = None
+        used_dataframe = False  # Track which format worked for prediction
         
+        feature_columns = []
+        if target and target in columns:
+            feature_columns = [col for col in columns if col != target]
+        else:
+            feature_columns = columns[:-1] if columns else []
+        
+        # First try with numpy array
+        try:
+            predictions = model.predict(X)
+            logger.info(f'Predicción exitosa con numpy array: {predictions}')
+            used_dataframe = False
+        except Exception as e:
+            prediction_error = str(e)
+            logger.warning(f"Predicción con numpy array falló: {e}")
+        
+            # Try with DataFrame if numpy failed
+            try:
+                if feature_columns and len(feature_columns) == X.shape[1]:
+                    X_df = pd.DataFrame(X, columns=feature_columns)
+                    predictions = model.predict(X_df)
+                    logger.info(f'Predicción exitosa con DataFrame: {predictions}')
+                    used_dataframe = True
+                else:
+                    logger.warning(f"No se pudieron obtener nombres de columnas válidos. Columnas disponibles: {feature_columns}, características esperadas: {X.shape[1]}")
+                    raise Exception(f"Modelo requiere DataFrame con nombres de columnas pero no se pudieron determinar. Error original: {prediction_error}")
+                    
+            except Exception as df_error:
+                logger.error(f"Predicción con DataFrame también falló: {df_error}")
+                raise Exception(f"Predicción falló con numpy array ({prediction_error}) y DataFrame ({str(df_error)})")
+        
+        if predictions is None:
+            raise Exception("No se pudieron realizar predicciones")
         prediction_time = time.time() - start_time
         
         response_data = {
@@ -363,16 +425,42 @@ async def predict(request: PredictionRequest):
             "model_path": model_path
         }
         
-        model_accuracy = model_info.get("accuracy")
+        model_accuracy = model_info.get('scores', {}).get("Accuracy")
         save_inference_stats(model_key, prediction_time, X.shape[0], model_accuracy)
 
         if request.return_probabilities:
+            logger.error(f"Calculando probabilidades para modelo: {model_key}")
+            logger.error(f"Tipo de modelo: {type(model).__name__}")
+            logger.error(f"Tiene predict_proba: {hasattr(model, 'predict_proba')}")
+            
             try:
-                probabilities = model.predict_proba(X)
-                response_data["probabilities"] = probabilities.tolist()
-                logger.info(f"Probabilidades calculadas para {X.shape[0]} muestras")
-            except AttributeError:
-                logger.warning(f"Modelo {model_key} no soporta predict_proba")
+
+                if not hasattr(model, 'predict_proba'):
+                    logger.error(f"Modelo {model_key} ({type(model).__name__}) no tiene método predict_proba")
+                    response_data["probabilities"] = None
+                else:
+                    if used_dataframe:
+                        X_df = pd.DataFrame(X, columns=feature_columns)
+                        logger.info(f"Usando DataFrame para probabilidades: {X_df.columns.tolist()}")
+                        probabilities = model.predict_proba(X_df)
+                        logger.error(probabilities)
+                        logger.error(f"Probabilidades calculadas con DataFrame para {X.shape[0]} muestras")
+                    else:
+                        logger.info(f"Usando numpy array para probabilidades: shape {X.shape}")
+                        probabilities = model.predict_proba(X)
+                        logger.info(f"Probabilidades calculadas con numpy array para {X.shape[0]} muestras")
+                    
+                    logger.info(f"Probabilidades shape: {probabilities.shape}")
+                    logger.info(f"Probabilidades sample: {probabilities[0] if len(probabilities) > 0 else 'empty'}")
+                    response_data["probabilities"] = probabilities.tolist()
+                    logger.info(f"Probabilidades convertidas a lista exitosamente")
+                    
+            except AttributeError as attr_error:
+                logger.warning(f"Modelo {model_key} no soporta predict_proba: {attr_error}")
+                response_data["probabilities"] = None
+            except Exception as prob_error:
+                logger.error(f"Error calculando probabilidades: {prob_error}")
+                logger.error(f"Tipo de excepción: {type(prob_error).__name__}")
                 response_data["probabilities"] = None
         
         return PredictionResponse(**response_data)
@@ -786,7 +874,6 @@ class TrainingRequest(BaseModel):
     problem_type: str = Field(..., description="Tipo de problema: 'Clasificación' o 'Regresión'")
     metrics: List[str] = Field(..., description="Lista de métricas a calcular")
     test_size: float = Field(0.2, ge=0.1, le=0.5)
-    cv_folds: int = Field(5, ge=2, description="Número de folds para validación cruzada")
     random_state: int = 42
     features_to_exclude: List[str] = []
     transform_target: bool = False
@@ -834,7 +921,6 @@ async def train(params: TrainingRequest):
             "problem_type": params.problem_type,
             "metrics": params.metrics,
              "test_size": params.test_size,
-            "cv_folds": params.cv_folds, 
             "random_state": params.random_state,
             "features_to_exclude": params.features_to_exclude,
             "transform_target": params.transform_target,

@@ -3,6 +3,7 @@ import streamlit as st
 import pandas as pd
 import os
 import time
+import random
 from typing import Dict, List
 import plotly.express as px
 import plotly.graph_objects as go
@@ -104,9 +105,10 @@ class APIClient:
         except Exception as e:
             return {"status": "error", "error": str(e)}
     
-    def predict(self, model_name: str, features: List[List[float]], return_probabilities: bool = False) -> Dict:
+    def predict(self, model_name: str, features: List[List[float]],features_name, return_probabilities: bool = False,) -> Dict:
         """Realiza predicciones usando un modelo"""
         try:
+            
             payload = {
                 "model_name": model_name,
                 "features": features,
@@ -117,6 +119,8 @@ class APIClient:
             return {"status": "success", "data": response.json()}
         except Exception as e:
             return {"status": "error", "error": str(e)}
+        
+
     def add_nodo(self, worker_name: str, add_cpu: int) -> Dict:
         """Agrega un nodo al cluster Ray llamando al endpoint /add/node"""
         try:
@@ -378,7 +382,28 @@ def render_api_tab(api_client: APIClient):
     with api_tabs[2]:
         render_inference_stats_tab(api_client)
     
+def convert_str_to_dtype(dtype_str):
+    """Convierte strings de tipos de datos de vuelta a dtypes de pandas/numpy"""
+    dtype_mapping = {
+        'float64': np.float64,
+        'float32': np.float32,
+        'int64': np.int64,
+        'int32': np.int32,
+        'bool': bool,
+        'object': object,
+        'category': 'category',
+        'datetime64[ns]': 'datetime64[ns]',
+        'timedelta64[ns]': 'timedelta64[ns]'
+    }
+    
+    if dtype_str.startswith('Float64'):
+        return pd.Float64Dtype()
+    elif dtype_str.startswith('Int64'):
+        return pd.Int64Dtype()
+    elif dtype_str.startswith('boolean'):
+        return pd.BooleanDtype()
 
+    return dtype_mapping.get(dtype_str, object)
 
 def render_explore_models_tab(api_client: APIClient):
     """Renderiza la pestaña de exploración de modelos"""
@@ -413,9 +438,7 @@ def render_explore_models_tab(api_client: APIClient):
         with col2:
             search_query = st.text_input("Buscar modelo", placeholder="Nombre del modelo...")
         
-        with col3:
-            sort_by = st.selectbox("Ordenar por", ["accuracy", "training_time", "modified_time", "file_size_mb"])
-    
+        
     filtered_models = {}
     for name, model in models.items():
         if model.get("dataset", "unknown") not in selected_datasets:
@@ -426,21 +449,10 @@ def render_explore_models_tab(api_client: APIClient):
         
         filtered_models[name] = model
 
-    if filtered_models:
-        try:
-            sorted_models = dict(sorted(
-                filtered_models.items(),
-                key=lambda x: x[1].get(sort_by, 0),
-                reverse=True
-            ))
-        except:
-            sorted_models = filtered_models
-    else:
-        sorted_models = {}
 
-    if sorted_models:
+    if filtered_models:
         cols = st.columns(2)
-        for i, (model_name, model_info) in enumerate(sorted_models.items()):
+        for i, (model_name, model_info) in enumerate(filtered_models.items()):
             with cols[i % 2]:
                 with st.container():
                     st.markdown(f"### {model_name}")
@@ -448,10 +460,22 @@ def render_explore_models_tab(api_client: APIClient):
                     col_info1, col_info2 = st.columns(2)
                     with col_info1:
                         st.metric("Dataset", model_info.get("dataset", "N/A"))
-                        st.metric("Accuracy", f"{model_info['scores'].get('Accuracy_mean', 0):.4f}")
+                        # Safe access to scores with error handling
+                        scores = model_info.get('scores', {})
+                        if isinstance(scores, dict):
+                            accuracy = scores.get('Accuracy', 0)
+                        else:
+                            accuracy = 0
+                        st.metric("Accuracy", f"{accuracy:.4f}")
                     
                     with col_info2:
-                        st.metric("Tiempo Entrenamiento", f"{model_info['scores'].get('Training Time (s)_mean', 0):.2f}s")
+                        
+                        scores = model_info.get('scores', {})
+                        if isinstance(scores, dict):
+                            training_time = scores.get('Training Time (s)', 0)
+                        else:
+                            training_time = 0
+                        st.metric("Tiempo Entrenamiento", f"{training_time:.2f}s")
                         st.metric("Tamaño Archivo", f"{model_info.get('file_size_mb', 0):.2f} MB")
                     
                     col_btn1, col_btn2 = st.columns(2)
@@ -489,13 +513,13 @@ def render_predictions_tab(api_client: APIClient):
         
     model_names = list(models.keys())
     
-    prediction_tabs = st.tabs(["📝 Predicción Individual", "🚀 Predicciones Concurrentes"])#, "📁 Predicción en Lote"])
+    prediction_tabs = st.tabs(["📝 Predicción Individual"])#🚀 Predicciones Concurrentes"])#, "📁 Predicción en Lote"])
     
     with prediction_tabs[0]:
         render_individual_prediction(api_client, model_names, models)
     
-    with prediction_tabs[1]:
-        render_concurrent_predictions(api_client, model_names, models)
+    #with prediction_tabs[1]:
+        #render_concurrent_predictions(api_client, model_names, models)
     
     #with prediction_tabs[2]:
         #render_batch_prediction(api_client, model_names)
@@ -503,147 +527,213 @@ def render_predictions_tab(api_client: APIClient):
 
 
 def render_individual_prediction(api_client: APIClient, model_names: List[str], models: Dict):
-    """Renderiza predicción individual"""
+    """Renderiza predicción individual dentro de un formulario"""
     st.subheader("📝 Predicción Individual")
     
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        selected_model = st.selectbox("Seleccionar Modelo", model_names)
-    with col2:
-        return_probabilities = st.checkbox("Incluir Probabilidades", value=True)    
+    # Controles principales fuera del formulario (selección de modelo)
+    selected_model = st.selectbox("Seleccionar Modelo", model_names)    
     
-    if selected_model:
-        model_info = models[selected_model]
-        st.info(f"Dataset: {model_info.get('dataset')} | Accuracy: {model_info.get('accuracy', 0):.4f}")
-        dataset = model_info.get('dataset', 'iris')
+    if not selected_model:
+        return
+    
+    model_info = models[selected_model]
+    dataset_name = model_info.get('dataset', '')
+    columns_to_exclude = model_info.get("columns_to_exclude", [])
+    feature_names = model_info.get("columns", [])
+    target = model_info.get('target')
+    
+    # Filtrado de columnas
+    if feature_names:
+        feature_names = [x for x in feature_names if x not in columns_to_exclude and x != target]
+    
+    data_types = [convert_str_to_dtype(dt) for dt in model_info.get('data_type', [])]
+    n_features = max(0, len(feature_names))
+    
+    if n_features == 0:
+        st.error("⚠️ No se encontraron características válidas para este modelo.")
+        return
+    
+    # Mostrar información del modelo
+    scores = model_info.get('scores', {})
+    accuracy = scores.get('Accuracy', 0) if isinstance(scores, dict) else 0
+    
+    st.info(f"""
+    **Dataset:** {dataset_name}  
+    **Accuracy:** {accuracy:.4f}  
+    **Características:** {n_features}
+    """)
+
+    # Generar valores de ejemplo
+    example_features = []
+    for i, dt in enumerate(data_types):
+        feature_name = feature_names[i] if i < len(feature_names) else f"Feature_{i+1}"
         
-        if dataset == 'iris':
-            feature_names = ['sepal length (cm)', 'sepal width (cm)', 'petal length (cm)', 'petal width (cm)']
-        elif dataset == 'breast_cancer':
-            feature_names = [
-                'mean radius', 'mean texture', 'mean perimeter', 'mean area', 'mean smoothness', 
-                'mean compactness', 'mean concavity', 'mean concave points', 'mean symmetry', 'mean fractal dimension',
-                'radius error', 'texture error', 'perimeter error', 'area error', 'smoothness error', 
-                'compactness error', 'concavity error', 'concave points error', 'symmetry error', 'fractal dimension error',
-                'worst radius', 'worst texture', 'worst perimeter', 'worst area', 'worst smoothness',
-                'worst compactness', 'worst concavity', 'worst concave points', 'worst symmetry', 'worst fractal dimension'
-            ]
-        elif dataset == 'wine':
-            feature_names = ['alcohol', 'malic_acid', 'ash', 'alcalinity_of_ash', 'magnesium', 'total_phenols', 
-                           'flavanoids', 'nonflavanoid_phenols', 'proanthocyanins', 'color_intensity', 'hue', 
-                           'od280/od315_of_diluted_wines', 'proline']
-        elif dataset == 'digits':
-            feature_names = [f'pixel_{i}' for i in range(64)]
+        if pd.api.types.is_integer_dtype(dt):
+            example = random.randint(0, 100)
+        elif pd.api.types.is_float_dtype(dt):
+            example = round(random.uniform(0, 1), 2)
+        elif pd.api.types.is_bool_dtype(dt):
+            example = random.choice([True, False])
+        elif pd.api.types.is_datetime64_any_dtype(dt):
+            example = pd.Timestamp.now() + pd.Timedelta(days=random.randint(-30, 30))
+        elif pd.api.types.is_categorical_dtype(dt):
+            example = random.choice(dt.categories) if hasattr(dt, 'categories') else f"Categoria_{random.randint(1, 5)}"
         else:
-            feature_names = [f'Feature {i+1}' for i in range(model_info.get('n_features', 4))]
+            example = f"Valor_{random.randint(1, 100)}"
         
-        n_features = len(feature_names)
-        
+        example_features.append(example)
+
+    
+    with st.form(key='prediction_form'):
         st.subheader("Introducir Características")
         features = []
+        
         if n_features <= 8:
-            st.write(f"Características del modelo ({n_features} en total):")
-            cols = st.columns(min(n_features, 4))
+            num_cols = min(max(n_features, 1), 4)
+            cols = st.columns(num_cols)
             for i in range(n_features):
-                with cols[i % 4]:
-                    value = st.number_input(
-                        feature_names[i] if i < len(feature_names) else f"Feature {i+1}",
-                        value=1.0,
-                        step=0.1,
-                        key=f"feature_{i}_{selected_model}",
-                        format="%.4f"
-                    )
-                    features.append(value)
-        
-            
-        else:
-            if dataset == 'breast_cancer':
-                
-                example_features = [1.799e+01, 1.038e+01, 1.228e+02, 1.001e+03, 1.184e-01, 2.776e-01, 
-                                  3.001e-01, 1.471e-01, 2.419e-01, 7.871e-02, 1.095e+00, 9.053e-01,
-                                  8.589e+00, 1.534e+02, 6.399e-03, 4.904e-02, 5.373e-02, 1.587e-02,
-                                  3.003e-02, 6.193e-03, 2.538e+01, 1.733e+01, 1.846e+02, 2.019e+03,
-                                  1.622e-01, 6.656e-01, 7.119e-01, 2.654e-01, 4.601e-01, 1.189e-01]
-            elif dataset == 'digits':
-                example_features = [0.0] * 64  
-            else:
-                example_features = [1.0] * n_features           
-            st.write(f"Todas las características ({n_features} en total):")
-        
-            feature_tabs = st.tabs(["Editor por Grupos"])
-            
-            with feature_tabs[0]:
-                num_tabs = (n_features + 15) // 16  
-                group_tabs = st.tabs([f"Grupo {i+1}" for i in range(num_tabs)])
-                
-                for tab_idx, tab in enumerate(group_tabs):
-                    with tab:
-                        start_idx = tab_idx * 16
-                        end_idx = min(start_idx + 16, n_features)
-                        st.write(f"Características {start_idx+1}-{end_idx}")
-                        
-                        cols = st.columns(4)
-                        for i in range(start_idx, end_idx):
-                            with cols[(i-start_idx) % 4]:
-                                value = st.number_input(
-                                    f"{feature_names[i]}" if i < len(feature_names) else f"F{i+1}",
-                                    value=float(example_features[i]),
-                                    step=0.1,
-                                    key=f"feature_{i}_{selected_model}",
-                                    format="%.4f"
-                                )
-                                example_features[i] = value
-           
-            features = example_features
-
-        if st.button("🔮 Realizar Predicción", type="primary"):
-            with st.spinner("Realizando predicción..."):
-                prediction_response = api_client.predict(
-                    selected_model, 
-                    [features], 
-                    return_probabilities
-                )
-                
-                if prediction_response["status"] == "error":
-                    st.error(f"Error en predicción: {prediction_response['error']}")
-                else:
-                    result = prediction_response["data"]
+                with cols[i % num_cols]:
+                    feature_name = feature_names[i] if i < len(feature_names) else f"Feature {i+1}"
+                    key = f"feature_{i}_{selected_model}"
                     
-                    col1, col2, col3 = st.columns(3)
-                    
-                    with col1:
-                        st.metric("Predicción", result["predictions"][0])
-                    
-                    with col2:
-                        st.metric("Tiempo", f"{result['prediction_time']:.3f}s")
-                    
-                    with col3:
-                        st.metric("Características", result["feature_count"])
-                        
-                    
-                    if result.get("probabilities"):
-                        st.subheader("Probabilidades por Clase")
-                        probs = result["probabilities"][0]
-                        
-                        if dataset == 'iris':
-                            class_names = ['Setosa', 'Versicolor', 'Virginica']
-                        elif dataset == 'wine':
-                            class_names = ['Clase 1', 'Clase 2', 'Clase 3']
-                        elif dataset == 'breast_cancer':
-                            class_names = ['Benigno', 'Maligno']
-                        else:
-                            class_names = [f"Clase {i}" for i in range(len(probs))]
-                        
-                        
-                        # Gráfico de barras con las probabilidades
-                        fig = px.bar(
-                            x=class_names[:len(probs)],
-                            y=probs,
-                            title="Distribución de Probabilidades por Clase",
-                            labels={"x": "Clase", "y": "Probabilidad"}
+                    if pd.api.types.is_numeric_dtype(data_types[i]):
+                        step = 1 if pd.api.types.is_integer_dtype(data_types[i]) else 0.1
+                        value = st.number_input(
+                            feature_name,
+                            value=float(example_features[i]),
+                            step=float(step),
+                            key=key,
+                            format="%.4f"
                         )
-                        st.plotly_chart(fig, use_container_width=True)
+                        if pd.api.types.is_integer_dtype(data_types[i]):
+                            value = int(value)
 
+                    elif pd.api.types.is_bool_dtype(data_types[i]):
+                        value = st.selectbox(
+                            feature_name,
+                            options=[True, False],
+                            index=int(example_features[i]),
+                            format_func=lambda x: "Verdadero" if x else "Falso",
+                            key=key
+                        )
+                    
+                    elif pd.api.types.is_datetime64_any_dtype(data_types[i]):
+                        value = st.date_input(
+                            feature_name,
+                            value=pd.to_datetime(example_features[i]),
+                            key=key
+                        )
+                        value = pd.to_datetime(value)
+
+                    elif pd.api.types.is_categorical_dtype(data_types[i]):
+                        categories = data_types[i].categories if hasattr(data_types[i], 'categories') else []
+                        value = st.selectbox(
+                            feature_name,
+                            options=categories if categories else [str(example_features[i])],
+                            index=0,
+                            key=key
+                        )
+                    else:
+                        value = st.text_input(
+                            feature_name,
+                            value=str(example_features[i]),
+                            key=key
+                        )
+                    
+                    features.append(value)
+        else:
+            tab_groups = [(f"Grupo {i+1}", i*8, min((i+1)*8, n_features)) for i in range((n_features + 7) // 8)]
+            tabs = st.tabs([group[0] for group in tab_groups])
+            
+            for tab, (_, start, end) in zip(tabs, tab_groups):
+                with tab:
+                    cols = st.columns(2)
+                    for i in range(start, end):
+                        with cols[(i - start) % 2]:
+                            feature_name = feature_names[i] if i < len(feature_names) else f"Feature {i+1}"
+                            key = f"feature_{i}_{selected_model}"
+                            
+                            if pd.api.types.is_numeric_dtype(data_types[i]):
+                                step = 1 if pd.api.types.is_integer_dtype(data_types[i]) else 0.1
+                                value = st.number_input(
+                                    feature_name,
+                                    value=float(example_features[i]),
+                                    step=step,
+                                    key=key
+                                )
+                                if pd.api.types.is_integer_dtype(data_types[i]):
+                                    value = int(value)
+                            
+                            elif pd.api.types.is_bool_dtype(data_types[i]):
+                                value = st.selectbox(
+                                    feature_name,
+                                    options=[True, False],
+                                    index=int(example_features[i]),
+                                    key=key
+                                )
+                            
+                            elif pd.api.types.is_datetime64_any_dtype(data_types[i]):
+                                value = st.date_input(
+                                    feature_name,
+                                    value=pd.to_datetime(example_features[i]),
+                                    key=key
+                                )
+                                value = pd.to_datetime(value)
+                            
+                            elif pd.api.types.is_categorical_dtype(data_types[i]):
+                                categories = data_types[i].categories if hasattr(data_types[i], 'categories') else []
+                                value = st.selectbox(
+                                    feature_name,
+                                    options=categories if categories else [str(example_features[i])],
+                                    index=0,
+                                    key=key
+                                )
+                            else:
+                                value = st.text_input(
+                                    feature_name,
+                                    value=str(example_features[i]),
+                                    key=key
+                                )
+                            
+                            if i >= len(features):
+                                features.append(value)
+                            else:
+                                features[i] = value
+
+        # Botón de submit dentro del formulario
+        submitted = st.form_submit_button("🔮 Realizar Predicción", type="primary")
+        
+        if submitted:
+            with st.spinner("Realizando predicción..."):
+                try:
+                    prediction_response = api_client.predict(
+                        selected_model, 
+                        [features],
+                        False
+                    )
+                    
+                    if prediction_response["status"] == "error":
+                        st.error(f"Error en predicción: {prediction_response['error']}")
+                    else:
+                        result = prediction_response["data"]
+                        display_prediction_results(result, False)  # No mostrar probabilidades
+                        
+                except Exception as e:
+                    st.error(f"Error al conectar con el servidor: {str(e)}")
+
+def display_prediction_results(result, show_probabilities):
+    """Muestra los resultados de la predicción"""
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.metric("Predicción", result["predictions"][0])
+    
+    with col2:
+        st.metric("Tiempo", f"{result['prediction_time']:.3f}s")
+    
+    with col3:
+        st.metric("Características", result["feature_count"])
+         
 
 def render_batch_prediction(api_client: APIClient, model_names: List[str]):
     """Renderiza predicción en lote"""
@@ -756,7 +846,14 @@ def render_inference_stats_tab(api_client: APIClient):
     aggregated_stats = stats_data.get("aggregated", {})
 
     model_names = list(raw_stats.keys())
-    selected_model = st.selectbox("Seleccionar modelo:", ["Todos"] + model_names)
+    # Crear un diccionario de nombres truncados para el selectbox
+    truncated_model_names = ["Todos"] + [truncate_model_name(name, 30) for name in model_names]
+    model_name_mapping = {"Todos": "Todos"}
+    for i, name in enumerate(model_names):
+        model_name_mapping[truncated_model_names[i+1]] = name
+    
+    selected_display_name = st.selectbox("Seleccionar modelo:", truncated_model_names)
+    selected_model = model_name_mapping[selected_display_name]
 
     st.subheader("Resumen de Estadísticas")
     col1, col2, col3, col4 = st.columns(4)
@@ -798,11 +895,15 @@ def render_inference_stats_tab(api_client: APIClient):
                 if entries:
                     timestamps = [datetime.fromisoformat(entry["timestamp"]) for entry in entries]
                     prediction_times = [entry["prediction_time"] for entry in entries]
+                    truncated_name = truncate_model_name(model_name, 15)
                     fig.add_trace(go.Scatter(
                         x=timestamps,
                         y=prediction_times,
                         mode='lines+markers',
-                        name=model_name,
+                        name=truncated_name,
+                        hovertemplate=f'<b>{model_name}</b><br>' +
+                                    'Tiempo: %{x}<br>' +
+                                    'Predicción: %{y:.3f}s<extra></extra>',
                         line=dict(width=2),
                         marker=dict(size=4)
                     ))
@@ -810,7 +911,16 @@ def render_inference_stats_tab(api_client: APIClient):
                 title="Tiempo de Predicción por Modelo",
                 xaxis_title="Tiempo",
                 yaxis_title="Tiempo de Predicción (s)",
-                hovermode='x unified'
+                hovermode='closest',
+                legend=dict(
+                    orientation="v",
+                    yanchor="top",
+                    y=1,
+                    xanchor="left",
+                    x=1.02,
+                    font=dict(size=10)
+                ),
+                margin=dict(r=150)  # Espacio adicional para la leyenda
             )
         else:
             if selected_model in raw_stats and raw_stats[selected_model]:
@@ -855,18 +965,31 @@ def render_inference_stats_tab(api_client: APIClient):
                         running_total += 1  # Count each prediction event
                         cumulative_predictions.append(running_total)
                     
+                    truncated_name = truncate_model_name(model_name, 15)
                     fig.add_trace(go.Scatter(
                         x=timestamps,
                         y=cumulative_predictions,
                         mode='lines',
-                        name=model_name,
+                        name=truncated_name,
+                        hovertemplate=f'<b>{model_name}</b><br>' +
+                                    'Tiempo: %{x}<br>' +
+                                    'Predicciones: %{y}<extra></extra>',
                         line=dict(width=2),
                     ))
             fig.update_layout(
                 title="Predicciones Acumuladas por Modelo",
                 xaxis_title="Tiempo",
                 yaxis_title="Total Predicciones",
-                hovermode='x unified'
+                hovermode='closest',
+                legend=dict(
+                    orientation="v",
+                    yanchor="top",
+                    y=1,
+                    xanchor="left",
+                    x=1.02,
+                    font=dict(size=10)
+                ),
+                margin=dict(r=150)  # Espacio adicional para la leyenda
             )
         else:
             if selected_model in raw_stats and raw_stats[selected_model]:
@@ -937,50 +1060,49 @@ def render_inference_stats_tab(api_client: APIClient):
         
         if bubble_data:
             df_bubble = pd.DataFrame(bubble_data)
+            # Agregar columna con nombres truncados para visualización
+            df_bubble['Modelo_Truncado'] = df_bubble['Modelo'].apply(lambda x: truncate_model_name(x, 12))
             
             fig = px.scatter(
                 df_bubble,
                 x="Tiempo Promedio (s)",
                 y="Accuracy", 
                 size="Total Predicciones",
-                color="Modelo",
-                hover_name="Modelo",
-                text="Modelo",
+                color="Modelo_Truncado",
+                hover_name="Modelo",  # Nombre completo en el hover
+                text="Modelo_Truncado",
                 size_max=60,
                 title="Comparativa de Eficiencia y Precisión entre Modelos",
+                hover_data={
+                    "Modelo_Truncado": False,  # No mostrar en hover
+                    "Total Predicciones": True,
+                    "Muestras": True
+                }
             )
             
             fig.update_layout(
                 xaxis_title="Tiempo Promedio de Predicción (s)",
                 yaxis_title="Accuracy",
                 height=500,
+                legend=dict(
+                    orientation="v",
+                    yanchor="top",
+                    y=1,
+                    xanchor="left",
+                    x=1.02,
+                    font=dict(size=10),
+                    title="Modelos"
+                ),
+                margin=dict(r=180)  # Más espacio para la leyenda
             )
             
             fig.update_traces(
                 textposition='top center',
-                marker=dict(line=dict(width=2, color='DarkSlateGrey'))
+                marker=dict(line=dict(width=2, color='DarkSlateGrey')),
+                textfont=dict(size=9)
             )
             
             st.plotly_chart(fig, use_container_width=True)
-    
-    st.subheader("Estadísticas Detalladas por Modelo")
-    if aggregated_stats:
-        table_data = []
-        for model_name, agg in aggregated_stats.items():
-            table_data.append({
-                "Modelo": model_name,
-                "Predicciones": agg.get("total_predictions", 0),
-                "Muestras Totales": agg.get("total_samples", 0),
-                "Tiempo Promedio": f"{agg.get('avg_prediction_time', 0):.3f}s",
-                "Tiempo Min": f"{agg.get('min_prediction_time', 0):.3f}s",
-                "Tiempo Max": f"{agg.get('max_prediction_time', 0):.3f}s",
-                "Tiempo/Muestra": f"{agg.get('avg_time_per_sample', 0):.4f}s",
-                "Última Predicción": agg.get("last_prediction", "N/A"),
-                "Accuracy": f"{agg.get('accuracy', 0):.4f}" if agg.get('accuracy') else "N/A"
-            })
-        
-        df = pd.DataFrame(table_data)
-        st.dataframe(df, use_container_width=True)
     
     if selected_model != "Todos" and selected_model in raw_stats:
         st.subheader(f"Detalle de Inferencias - {selected_model}")
@@ -1209,4 +1331,23 @@ def render_concurrent_predictions(api_client: APIClient, model_names: List[str],
                             sample_data.append(row)
                         
                         st.dataframe(pd.DataFrame(sample_data), use_container_width=True)
+
+def truncate_model_name(model_name: str, max_length: int = 20) -> str:
+    """Trunca nombres de modelos largos para mejorar la visualización en gráficos"""
+    if len(model_name) <= max_length:
+        return model_name
+    
+    # Si el nombre contiene "_", intentar mantener la parte más importante
+    if "_" in model_name:
+        parts = model_name.split("_")
+        # Mantener la primera parte (tipo de modelo) y truncar el resto
+        model_type = parts[0]
+        if len(model_type) > max_length:
+            return model_type[:max_length-3] + "..."
+        
+        remaining_length = max_length - len(model_type) - 4  # -4 para "_..."
+        if remaining_length > 0:
+            dataset_part = "_".join(parts[1:])
+            if len(dataset_part) > remaining_length:
+                return model_type + "_" + dataset_part[:remaining_length] + "..."
 

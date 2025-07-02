@@ -86,17 +86,25 @@ with st.sidebar:
         st.experimental_rerun()
     
     
+try:
+    with tabs[0]:
+        render_cluster_status_tab(cluster_status['data'],system_metrics,api_client)
+except Exception as e:
+    st.error(f"Error en pestaña de Cluster: {e}")
 
-with tabs[0]:
-    render_cluster_status_tab(cluster_status['data'],system_metrics,api_client)
+try:
+    with tabs[1]:
+        render_training_tab(cluster_status["data"],api_client)
+except Exception as e:
+    st.error(f"Error en pestaña de Entrenamiento: {e}")
+    st.write("Detalles del error:")
+    st.exception(e)
 
-with tabs[1]:
-    render_training_tab(cluster_status["data"],api_client)
-
-
-with tabs[2]:
-    render_api_tab(api_client)
-
+try:
+    with tabs[2]:
+        render_api_tab(api_client)
+except Exception as e:
+    st.error(f"Error en pestaña de API: {e}")
 #with tabs[3]:
  #   render_system_metrics_tab(system_metrics)
 
