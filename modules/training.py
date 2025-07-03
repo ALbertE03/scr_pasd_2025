@@ -3,8 +3,6 @@ import pandas as pd
 import numpy as np
 import time
 import warnings
-import json
-import shutil
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler, OneHotEncoder, MinMaxScaler
 from sklearn.compose import ColumnTransformer
@@ -23,17 +21,102 @@ from sklearn.discriminant_analysis import LinearDiscriminantAnalysis, QuadraticD
 from sklearn.neural_network import MLPClassifier
 from sklearn.multiclass import OneVsRestClassifier, OneVsOneClassifier
 import logging
-from collections import defaultdict
 from datetime import datetime
-import pickle 
-import os  
-import subprocess
-# --- Configuration ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 
+
+@ray.remote
+class ModelManager:
+    """Actor para gestionar el mapeo de modelos en el Ray object store"""
+    
+    def __init__(self):
+        self.model_registry = {} 
+        self.scores={}
+        
+    def create_model_id(self, model_name, dataset_name):
+        """Crear ID único para el modelo basado en nombre del modelo y dataset"""
+        return f"{dataset_name}_{model_name}"
+    
+    def store_model(self, model_name, dataset_name, model_pipeline):
+        """Guardar modelo en object store y registrar la referencia"""
+        model_id = self.create_model_id(model_name, dataset_name)
+        model_ref = ray.put(model_pipeline)
+        self.model_registry[model_id] = model_ref
+        logger.info(f"Modelo {model_id} almacenado en object store")
+        return model_id, model_ref
+    
+    def get_model(self, model_name, dataset_name):
+        """Obtener referencia del modelo del object store"""
+        model_id = self.create_model_id(model_name, dataset_name)
+        if model_id in self.model_registry:
+            return self.model_registry[model_id]
+        else:
+            logger.warning(f"Modelo {model_id} no encontrado en el registry")
+            return None
+    
+    def list_all_model_ids(self):
+        """Retornar todos los IDs de modelos disponibles"""
+        return list(self.model_registry.keys())
+    
+    def search_models(self, model_name=None, dataset_name=None):
+        """Buscar modelos por nombre de modelo o dataset"""
+        matching_ids = []
+        for model_id in self.model_registry.keys():
+            parts = model_id.split('_', 1)
+            if len(parts) == 2:
+                dataset, model = parts[0], parts[1]
+                if (model_name is None or model_name in model) and \
+                   (dataset_name is None or dataset_name in dataset):
+                    matching_ids.append(model_id)
+        return matching_ids
+    
+    def remove_model(self, model_name, dataset_name):
+        """Remover modelo del registry"""
+        model_id = self.create_model_id(model_name, dataset_name)
+        if model_id in self.model_registry:
+            del self.model_registry[model_id]
+            logger.info(f"Modelo {model_id} removido del registry")
+            return True
+        return False
+    def get_scores(self, id):
+        """Obtener scores del modelo desde el object store"""
+        if id in self.scores:
+            score_ref = self.scores[id]
+            return ray.get(score_ref)  # Obtener los datos reales del object store
+        return None
+    
+    def save_scores(self, model, dataset, scores):
+        """Guardar scores en el object store"""
+        id = self.create_model_id(model, dataset)
+        score_ref = ray.put(scores)
+        self.scores[id] = score_ref
+        logger.info(f"Scores guardados para modelo {id}")
+    
+    def delete_model(self, model_id):
+        """Eliminar modelo y sus scores del registry"""
+        deleted = False
+        
+        # Eliminar del registry de modelos
+        if model_id in self.model_registry:
+            del self.model_registry[model_id]
+            deleted = True
+            logger.info(f"Modelo {model_id} eliminado del registry")
+        
+        # Eliminar scores asociados
+        if model_id in self.scores:
+            del self.scores[model_id]
+            logger.info(f"Scores eliminados para modelo {model_id}")
+        
+        return deleted
+    def get_registry_stats(self):
+        """Obtener estadísticas del registry"""
+        return {
+            "total_models": len(self.model_registry),
+            "model_ids": list(self.model_registry.keys())
+        }
 
 
 @ray.remote(num_cpus=1, max_retries=3)
@@ -49,6 +132,7 @@ def train_and_evaluate_model(task):
     test_size = task["test_size"]
     random_state = task["random_state"]
     dataset_name = task["dataset_name"]
+    model_manager = task["model_manager"]
     
     try:
         pipeline = Pipeline(steps=[('preprocessor', preprocessor), ('model', model)])
@@ -56,7 +140,6 @@ def train_and_evaluate_model(task):
         X_df = ray.get(X_df_ref)
         y_series = ray.get(y_series_ref)
 
-        # Dividir en train y test para evaluación
         X_train, X_test, y_train, y_test = train_test_split(
             X_df, y_series, test_size=test_size, random_state=random_state,
             stratify=y_series if problem_type == "Clasificación" else None
@@ -65,7 +148,6 @@ def train_and_evaluate_model(task):
         start_time = time.time()
         pipeline.fit(X_train, y_train)
         
-        # Hacer predicciones en el conjunto de test
         y_pred = pipeline.predict(X_test)
         class_labels = task.get('class_labels')
         
@@ -117,20 +199,17 @@ def train_and_evaluate_model(task):
         scores['Training Time (s)'] = round(time.time() - start_time, 2)
         scores['Test Size'] = len(X_test)
         scores['Train Size'] = len(X_train)
-        base_results_dir = f'train_results/{dataset_name}'
-        models_dir = os.path.join(base_results_dir, 'models')
-        os.makedirs(models_dir, exist_ok=True)
-        
-        model_path = os.path.join(models_dir, f"{model_name}.pkl")
-        with open(model_path, 'wb') as f:
-            pickle.dump(pipeline, f)
-        
-        logger.info(f"[SUCCESS] Modelo {model_name} entrenado y guardado en {model_path}")
+
+        # Almacenar modelo en object store usando ModelManager
+        model_id, model_ref = ray.get(model_manager.store_model.remote(model_name, dataset_name, pipeline))
+        ray.get(model_manager.save_scores.remote(model_name, dataset_name, scores))
+        logger.info(f"[SUCCESS] Modelo {model_name} entrenado y almacenado con ID: {model_id}")
         
         return {
             'model_name': model_name,
+            'model_id': model_id,
             'scores': scores,
-            'model_path': model_path,
+            'model_ref': model_ref,
             'status': 'Success'
         }
         
@@ -140,7 +219,7 @@ def train_and_evaluate_model(task):
 
 
 class Trainer:
-    def __init__(self, df, target_column, problem_type, metrics, test_size, random_state, features_to_exclude, transform_target, selected_models, estrategia, dataset_name):
+    def __init__(self, df, target_column, problem_type, metrics, test_size, random_state, features_to_exclude, transform_target, selected_models, estrategia, dataset_name,model_manager):
         self.df = df
         self.target_column = target_column
         self.problem_type = problem_type
@@ -152,6 +231,10 @@ class Trainer:
         self.selected_models = selected_models
         self.estrategia = estrategia
         self.dataset_name = dataset_name.replace(".csv", "")
+        self.train_result_ref = None
+        
+        self.model_manager = model_manager
+        logger.info("ModelManager actor inicializado")
 
     def get_models(self):
         rs = self.random_state
@@ -163,8 +246,8 @@ class Trainer:
         "ExtraTrees": ExtraTreesClassifier(random_state=rs),
         "DecisionTree": DecisionTreeClassifier(random_state=rs),
         "LogisticRegression": LogisticRegression(random_state=rs, max_iter=1000),
-        "SGD": SGDClassifier(random_state=rs, loss='log_loss'),  # Requiere loss='log' o 'modified_huber' para predict_proba
-        "SVM": SVC(probability=True, random_state=rs),  # Necesita probability=True
+        "SGD": SGDClassifier(random_state=rs, loss='log_loss'),  
+        "SVM": SVC(probability=True, random_state=rs), 
         "GaussianNB": GaussianNB(),
         "BernoulliNB": BernoulliNB(),
         "MultinomialNB": MultinomialNB(),
@@ -173,10 +256,9 @@ class Trainer:
         "QDA": QuadraticDiscriminantAnalysis(),
         "MLP": MLPClassifier(random_state=rs, max_iter=500),
         
-        # Clasificadores que NO soportan predict_proba (se excluyen o se dejan sin cambios)
-        "PassiveAggressive": PassiveAggressiveClassifier(random_state=rs),  # No soporta probabilidades
-        "KNN": KNeighborsClassifier(),  # Soporta predict_proba por defecto
-        "LinearSVM": LinearSVC(random_state=rs, dual="auto"),  # No soporta predict_proba
+        "PassiveAggressive": PassiveAggressiveClassifier(random_state=rs), 
+        "KNN": KNeighborsClassifier(),  
+        "LinearSVM": LinearSVC(random_state=rs, dual="auto"), 
         
         # Regresores (no aplican para probabilidades)
         "LinearRegression": LinearRegression(),
@@ -204,31 +286,82 @@ class Trainer:
     
     def save_results(self, results):
         """Guardar resultados simplificados"""
-        base_results_dir = f'train_results/{self.dataset_name}'
-        os.makedirs(base_results_dir, exist_ok=True)
-        logger.info(f"Saving results to: {base_results_dir}")
-
-        # Guardar resultados en JSON
         d = {}
-        try:
-            with open(os.path.join('train_results', self.dataset_name, f'training_{self.dataset_name}_result.json'), 'r') as f:
-                d = json.load(f)
-        except:
-            d = {}
- 
+        if self.train_result_ref:
+            d = ray.get(self.train_result_ref)
+        
         for result in results:
             if result.get('status') == 'Success':
-                d[result['model_name']] = {
-                    **result,
+                # Los modelos ya están almacenados en ModelManager, solo guardamos metadatos
+                model_data = {
+                    'model_name': result['model_name'],
+                    'model_id': result['model_id'],
+                    'scores': result['scores'],
+                    'status': result['status'],
                     'shape_dataset': self.df.shape,
                     'columns': list(self.df.columns),
                     'data_type': [str(x) for x in self.df.dtypes.tolist()],
                     'columns_to_exclude': self.features_to_exclude,
-                    'target': self.target_column
+                    'target': self.target_column,
+                    'dataset_name': self.dataset_name
                 }
+                d[result['model_name']] = model_data
                 
-        with open(os.path.join('train_results', self.dataset_name, f'training_{self.dataset_name}_result.json'), 'w') as f:
-            json.dump(d, f)
+        self.train_result_ref = ray.put(d)
+
+    def get_model_by_name(self, model_name):
+        """Obtener modelo específico por nombre usando ModelManager"""
+        try:
+            model_ref = ray.get(self.model_manager.get_model.remote(model_name, self.dataset_name))
+            if model_ref:
+                return ray.get(model_ref)
+            else:
+                logger.warning(f"Modelo {model_name} no encontrado para dataset {self.dataset_name}")
+                return None
+        except Exception as e:
+            logger.error(f"Error obteniendo modelo {model_name}: {e}")
+            return None
+    
+    def search_models(self, model_name_pattern=None, dataset_name_pattern=None):
+        """Buscar modelos usando patrones"""
+        try:
+            matching_ids = ray.get(self.model_manager.search_models.remote(
+                model_name=model_name_pattern, 
+                dataset_name=dataset_name_pattern
+            ))
+            return matching_ids
+        except Exception as e:
+            logger.error(f"Error buscando modelos: {e}")
+            return []
+    
+    def list_all_models(self):
+        """Listar todos los IDs de modelos disponibles"""
+        try:
+            all_ids = ray.get(self.model_manager.list_all_model_ids.remote())
+            return all_ids
+        except Exception as e:
+            logger.error(f"Error listando modelos: {e}")
+            return []
+    
+    def get_model_registry_stats(self):
+        """Obtener estadísticas del registry de modelos"""
+        try:
+            stats = ray.get(self.model_manager.get_registry_stats.remote())
+            return stats
+        except Exception as e:
+            logger.error(f"Error obteniendo estadísticas: {e}")
+            return {"total_models": 0, "model_ids": []}
+    
+    def remove_model(self, model_name):
+        """Remover modelo del registry"""
+        try:
+            removed = ray.get(self.model_manager.remove_model.remote(model_name, self.dataset_name))
+            if removed:
+                logger.info(f"Modelo {model_name} removido exitosamente")
+            return removed
+        except Exception as e:
+            logger.error(f"Error removiendo modelo {model_name}: {e}")
+            return False
 
 
     def train(self):
@@ -286,7 +419,8 @@ class Trainer:
                     "problem_type": self.problem_type,
                     "test_size": self.test_size,
                     "random_state": self.random_state,
-                    "dataset_name": self.dataset_name
+                    "dataset_name": self.dataset_name,
+                    "model_manager": self.model_manager  # Pasar ModelManager a la tarea
                 }
                 future = train_and_evaluate_model.remote(task)
                 futures.append(future)
@@ -298,11 +432,66 @@ class Trainer:
             logger.info(f"Entrenamiento completado. {len(successful_results)} modelos entrenados exitosamente.")
             
             self.save_results(successful_results)
-            return successful_results
+            
+            # Devolver directamente el diccionario de resultados, no envuelto en lista
+            if self.train_result_ref:
+                return ray.get(self.train_result_ref)
+            else:
+                # Convertir successful_results a formato diccionario si no hay train_result_ref
+                result_dict = {}
+                for result in successful_results:
+                    if 'model_name' in result:
+                        result_dict[result['model_name']] = result
+                return result_dict
             
         except Exception as e:
             logger.error(f"Error fatal en el Trainer: {e}", exc_info=True)
             return [{"status": "Fatal Error", "error": str(e)}]
+
+
+
+
+def create_global_model_manager():
+    """Crear un ModelManager global para usar en toda la aplicación"""
+    return ModelManager.options(name="model_manager",get_if_exists=True,lifetime="detached").remote()
+
+def search_and_load_model(model_manager, model_name, dataset_name):
+    """Función de conveniencia para buscar y cargar un modelo específico"""
+    try:
+        # Crear el ID esperado
+        expected_id = f"{dataset_name}_{model_name}"
+        
+        # Verificar si existe
+        all_ids = ray.get(model_manager.list_all_model_ids.remote())
+        
+        if expected_id in all_ids:
+            model_ref = ray.get(model_manager.get_model.remote(model_name, dataset_name))
+            if model_ref:
+                model = ray.get(model_ref)
+                logger.info(f"Modelo {expected_id} cargado exitosamente")
+                return model
+        
+        logger.warning(f"Modelo {expected_id} no encontrado. Modelos disponibles: {all_ids}")
+        return None
+        
+    except Exception as e:
+        logger.error(f"Error buscando/cargando modelo {model_name} para dataset {dataset_name}: {e}")
+        return None
+
+def predict_with_stored_model(model_manager, model_name, dataset_name, X_new):
+    """Realizar predicciones usando un modelo almacenado"""
+    try:
+        model = search_and_load_model(model_manager, model_name, dataset_name)
+        if model:
+            predictions = model.predict(X_new)
+            logger.info(f"Predicciones realizadas con modelo {model_name}")
+            return predictions
+        else:
+            logger.error(f"No se pudo cargar el modelo {model_name} para hacer predicciones")
+            return None
+    except Exception as e:
+        logger.error(f"Error realizando predicciones: {e}")
+        return None
 
 
 

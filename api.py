@@ -15,11 +15,11 @@ from pydantic import BaseModel, Field
 import uvicorn
 import psutil
 import ray
-from modules.training import Trainer
+from modules.training import Trainer, ModelManager, create_global_model_manager, search_and_load_model, predict_with_stored_model
 import subprocess
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
 app = FastAPI(
     title="Distributed ML API",
     description="API para interactuar con modelos de Machine Learning entrenados en cluster Ray",
@@ -37,11 +37,25 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 trainer = None
 models_cache = {}
 models_directory = "models"
 inference_stats_file = "inference_stats.json"
+global_model_manager = None
+
+
+def get_or_create_model_manager():
+    """Obtiene o crea una instancia del ModelManager como actor Ray"""
+    try:
+        # Intentar obtener el actor existente
+        model_manager = ray.get_actor("model_manager")
+        logger.info("ModelManager existente encontrado")
+        return model_manager
+    except ValueError:
+        # Si no existe, crear uno nuevo
+        logger.info("Creando nuevo ModelManager")
+        model_manager = create_global_model_manager()
+        return model_manager
 
 
 @app.get("/favicon.ico", include_in_schema=False)
@@ -146,8 +160,7 @@ def load_model_from_file(model_name: str, dataset_name: str = None, models_dir: 
     if not os.listdir(path):
         logger.info("No se encontraron datasets en el directorio train_results")
         return "",""
-    
-    # Extract the base model name if it contains dataset info
+
     base_model_name = model_name.split("_")[0] if "_" in model_name else model_name
     
     for dataset in os.listdir(path):
@@ -155,8 +168,7 @@ def load_model_from_file(model_name: str, dataset_name: str = None, models_dir: 
      
         if not os.path.isdir(path1):
             continue
-        
-        # Look in the models subdirectory within each dataset
+
         models_path = os.path.join(path1, 'models')
         if not os.path.exists(models_path) or not os.path.isdir(models_path):
             continue
@@ -164,8 +176,7 @@ def load_model_from_file(model_name: str, dataset_name: str = None, models_dir: 
         for model_file_name in os.listdir(models_path):
             if not model_file_name.endswith(".pkl"):
                 continue
-            
-            # Check if the base model name matches the beginning of the file name
+
             file_base_name = model_file_name.split("_")[0]
             if file_base_name != base_model_name:
                 continue
@@ -183,92 +194,148 @@ def load_model_from_file(model_name: str, dataset_name: str = None, models_dir: 
 
 
 def get_available_models() -> Dict[str, Dict]:
-    """Obtiene información de todos los modelos disponibles con búsqueda exhaustiva"""
+    """Obtiene información de todos los modelos disponibles usando ModelManager o fallback a archivos"""
+    try:
+        # Intentar usar ModelManager primero
+        try:
+            model_manager = ray.get_actor("model_manager")
+            logger.info("Usando ModelManager para obtener modelos disponibles")
+            
+            all_model_ids = ray.get(model_manager.list_all_model_ids.remote())
+            models_info = {}    
+            for model_id in all_model_ids:
+                try:
+                    scores = ray.get(model_manager.get_scores.remote(model_id))
+                    if scores is None:
+                        scores = {}
+                        logger.warning(f"No se encontraron scores para modelo {model_id}")
+                    
+                    # Asegurar que scores sea un diccionario serializable
+                    if not isinstance(scores, dict):
+                        logger.warning(f"Scores para modelo {model_id} no es un diccionario, convirtiendo")
+                        scores = {}
+                    
+                    # Convertir valores no serializables a strings
+                    safe_scores = {}
+                    for key, value in scores.items():
+                        try:
+                            if isinstance(value, (int, float, str, bool, list)):
+                                safe_scores[key] = value
+                            elif hasattr(value, 'tolist'):  # numpy arrays
+                                safe_scores[key] = value.tolist()
+                            else:
+                                safe_scores[key] = str(value)
+                        except Exception as convert_error:
+                            logger.warning(f"Error convirtiendo score {key}: {convert_error}")
+                            safe_scores[key] = str(value)
+                    
+                    parts = model_id.split('_')
+                    
+                    model_name = parts[-1]
+                    dataset_name = "_".join(parts[:-1])
+
+                    # Obtener el tamaño del modelo desde el object store
+                    object_size = None
+                    try:
+                        model_ref = ray.get(model_manager.get_model.remote(model_name, dataset_name))
+                        if model_ref is not None:
+                            model_obj = ray.get(model_ref)
+                            import pickle
+                            model_bytes = pickle.dumps(model_obj)
+                            object_size = len(model_bytes)
+                    except Exception as size_error:
+                        logger.warning(f"No se pudo obtener el tamaño del objeto para modelo {model_id}: {size_error}")
+
+                    models_info[model_id] = {
+                            "model_name": model_name,
+                            "dataset_name": dataset_name,
+                            "model_id": model_id,
+                            "status": "available_in_object_store",
+                            "timestamp": datetime.now().isoformat(),
+                            'scores': safe_scores,
+                            "object_size": object_size,
+                            "object_size_mb": round(object_size / (1024 * 1024), 2) if object_size else None,
+                            "object_size_kb": round(object_size / 1024, 2) if object_size else None
+                        }
+                        
+                except Exception as e:
+                    logger.error(f"Error procesando modelo {model_id}: {e}")
+                    continue
+            
+            logger.info(f"Encontrados {len(models_info)} modelos en ModelManager")
+            return models_info
+            
+        except ValueError as ve:
+            logger.warning(f"ModelManager no disponible: {ve}. Usando fallback a archivos.")
+            return get_models_from_files()
+        
+    except Exception as e:
+        logger.error(f"Error obteniendo modelos del ModelManager: {e}")
+        # Fallback a archivos en caso de error
+        logger.info("Intentando fallback a archivos...")
+        return get_models_from_files()
+
+
+def get_models_from_files() -> Dict[str, Dict]:
+    """Fallback: Obtiene modelos disponibles desde archivos en el sistema"""
     models_info = {}
     path = 'train_results'
+    
+    try:
+        if not os.path.exists(path):
+            logger.info(f"Directorio {path} no existe")
+            return models_info
+            
+        if not os.listdir(path):
+            logger.info("No se encontraron datasets en el directorio train_results")
+            return models_info
 
-    os.makedirs(path, exist_ok=True)
- 
-    if not os.listdir(path):
-        logger.info("No se encontraron datasets en el directorio train_result")
+        for dataset in os.listdir(path):
+            dataset_path = os.path.join(path, dataset)
+         
+            if not os.path.isdir(dataset_path):
+                continue
+
+            models_path = os.path.join(dataset_path, 'models')
+            if not os.path.exists(models_path) or not os.path.isdir(models_path):
+                continue
+                
+            for model_file_name in os.listdir(models_path):
+                if not model_file_name.endswith(".pkl"):
+                    continue
+
+                model_path = os.path.join(models_path, model_file_name)
+                model_base_name = model_file_name.replace('.pkl', '')
+                model_id = f"{dataset}_{model_base_name}"
+                
+                try:
+                    # Obtener información del archivo
+                    file_stat = os.stat(model_path)
+                    file_size = file_stat.st_size
+                    file_modified = datetime.fromtimestamp(file_stat.st_mtime)
+                    
+                    models_info[model_id] = {
+                        "model_name": model_base_name,
+                        "dataset_name": dataset,
+                        "model_id": model_id,
+                        "status": "available_in_file",
+                        "timestamp": file_modified.isoformat(),
+                        "file_path": model_path,
+                        "file_size": file_size,
+                        "file_size_mb": round(file_size / (1024 * 1024), 2),
+                        "file_size_kb": round(file_size / 1024, 2),
+                        "scores": {}
+                    }
+                except Exception as e:
+                    logger.error(f"Error procesando archivo {model_path}: {e}")
+                    continue
+        
+        logger.info(f"Encontrados {len(models_info)} modelos en archivos")
         return models_info
-    
-    for dataset in os.listdir(path):
-        path1 = os.path.join(path, dataset,'models')
-     
-        if not os.path.isdir(path1):
-            continue
-            
-        for model_file_name in os.listdir(path1):
-            if not model_file_name.endswith(".pkl"):
-                continue
-            
-            model_path = os.path.join(path1, model_file_name)
-            model_file = Path(model_path)
-            logger.info(f"Procesando modelo: {model_file_name} en {path1}")
-            try:
-                
-                
-                unique_name = f"{model_file_name.split('_')[0]}_{dataset}"
-                model_info = {
-                    "model_name": unique_name,
-                    "dataset": dataset,
-                    "file_path": str(model_path),
-                    "directory": str(path1),
-                    "file_size_mb": round(model_file.stat().st_size / (1024*1024), 2),
-                    "modified_time": datetime.fromtimestamp(model_file.stat().st_mtime).isoformat(),
-                    "scores": {}  # Initialize with empty scores dict
-                }
-                
-                for result_file_name in os.listdir(os.path.join(path,dataset)):
-                    if not result_file_name.endswith('.json'):
-                        continue
-
-                    result_file_path = os.path.join(os.path.join(path,dataset), result_file_name)
-                    try:
-                        with open(result_file_path, 'r') as f:
-                            results = json.load(f)
-                            logger.info(f"Loaded results from {result_file_path}")
-                            
-                            # Extract base model name from file (e.g., "RandomForest" from "RandomForest.pkl")
-                            model_key = model_file_name.replace('.pkl', '').split('_')[0]
-                            
-                            if model_key in results:
-                                result = results[model_key]
-                                logger.info(f"Found result for model {model_key} with scores: {result.get('scores', {})}")
-                                
-                                # Update model_info with result data, but preserve the unique_name and dataset
-                                original_model_name = model_info['model_name']
-                                original_dataset = model_info['dataset']
-                                
-                                model_info.update(result)
-                                
-                                # Restore the unique identifiers
-                                model_info['model_name'] = original_model_name
-                                model_info['dataset'] = original_dataset
-                                
-                                # Ensure scores structure exists and is valid
-                                if 'scores' in result and isinstance(result['scores'], dict):
-                                    model_info['scores'] = result['scores']
-                                    logger.info(f"Successfully loaded scores for {model_key}: {model_info['scores']}")
-                                else:
-                                    logger.warning(f"Model {model_key} missing or invalid 'scores' in result data")
-                                    model_info['scores'] = {}
-                                
-                                break  # Found the result, no need to check other files
-                                
-                    except Exception as e:
-                        logger.warning(f"Error cargando métricas desde {result_file_path}: {e}")
-                
-                models_info[unique_name] = model_info
-            
-            except Exception as e:
-                logger.warning(f"Error cargando modelo {model_path}: {e}")
-                continue
-    
-    logger.info(f"Encontrados {len(models_info)} modelos en total")
-    return models_info
-
+        
+    except Exception as e:
+        logger.error(f"Error obteniendo modelos desde archivos: {e}")
+        return models_info
 
 @app.get("/", summary="Información de la API")
 async def root():
@@ -304,7 +371,6 @@ async def health_check():
         health_status["ray_cluster"] = f"error: {str(e)}"
     
     return health_status
-
 
 
 
@@ -381,7 +447,7 @@ async def predict(request: PredictionRequest):
         target = model_info.get('target', '')
         predictions = None
         prediction_error = None
-        used_dataframe = False  # Track which format worked for prediction
+        used_dataframe = False  
         
         feature_columns = []
         if target and target in columns:
@@ -389,7 +455,6 @@ async def predict(request: PredictionRequest):
         else:
             feature_columns = columns[:-1] if columns else []
         
-        # First try with numpy array
         try:
             predictions = model.predict(X)
             logger.info(f'Predicción exitosa con numpy array: {predictions}')
@@ -398,7 +463,6 @@ async def predict(request: PredictionRequest):
             prediction_error = str(e)
             logger.warning(f"Predicción con numpy array falló: {e}")
         
-            # Try with DataFrame if numpy failed
             try:
                 if feature_columns and len(feature_columns) == X.shape[1]:
                     X_df = pd.DataFrame(X, columns=feature_columns)
@@ -475,7 +539,7 @@ async def predict(request: PredictionRequest):
 @app.get("/cluster/status", response_model=ClusterInfo, summary="Estado del cluster Ray")
 async def cluster_status():
     """Obtiene información extendida del estado del cluster Ray"""
-    import time
+    
     try:
         if not ray.is_initialized():
             head_address = os.getenv('RAY_HEAD_SERVICE_HOST', 'ray-head')
@@ -509,7 +573,7 @@ async def cluster_status():
 
 @app.delete("/models/{model_name}", summary="Eliminar modelo", response_model=None)
 async def delete_model(model_name: str):
-    """Elimina un modelo entrenado del almacenamiento"""
+    """Elimina un modelo entrenado del almacenamiento y del object store"""
     try:
         logger.info(f"Solicitud para eliminar modelo: {model_name}")
         models = get_available_models()
@@ -548,51 +612,82 @@ async def delete_model(model_name: str):
             logger.info(f"Modelo encontrado por coincidencia parcial: {model_key}")
         
         model_info = models[model_key]
-        model_path = model_info["file_path"]
-        logger.info(f"Intentando eliminar archivo: {model_path}")
-        
-        if os.path.exists(model_path):
-            try:
-                os.remove(model_path)
-                logger.info(f"Modelo {model_key} eliminado exitosamente de {model_path}")
-                
-                global models_cache
-                models_cache = {} 
-                logger.info(f"Cache de modelos limpiada completamente")
-                
+        deletion_results = {
+            "success": True,
+            "message": f"Modelo {model_key} eliminado exitosamente",
+            "original_request": model_name,
+            "timestamp": datetime.now().isoformat(),
+            "deleted_from_object_store": False,
+            "deleted_from_file": False,
+            "object_store_error": None,
+            "file_error": None
+        }
 
-                if os.path.exists(model_path):
-                    logger.error(f"ERROR: El archivo {model_path} todavía existe después de intentar eliminarlo")
-                    raise HTTPException(
-                        status_code=500, 
-                        detail=f"El archivo no pudo ser eliminado completamente: {model_path}"
-                    )
-                
-                return {
-                    "success": True,
-                    "message": f"Modelo {model_key} eliminado exitosamente",
-                    "deleted_file": model_path,
-                    "original_request": model_name,
-                    "timestamp": datetime.now().isoformat()
-                }
-            except PermissionError:
-                logger.error(f"Error de permisos al eliminar archivo: {model_path}")
-                raise HTTPException(
-                    status_code=403, 
-                    detail=f"Sin permisos para eliminar el archivo: {model_path}"
-                )
-            except Exception as file_error:
-                logger.error(f"Error al eliminar archivo {model_path}: {file_error}")
-                raise HTTPException(
-                    status_code=500, 
-                    detail=f"Error al eliminar archivo: {str(file_error)}"
-                )
+        # Eliminar del object store usando ModelManager (si está disponible)
+        try:
+            model_manager = ray.get_actor("model_manager")
+            delete_result = ray.get(model_manager.delete_model.remote(model_key))
+            if delete_result:
+                logger.info(f"Modelo {model_key} eliminado exitosamente del object store")
+                deletion_results["deleted_from_object_store"] = True
+            else:
+                logger.warning(f"No se pudo eliminar el modelo {model_key} del object store")
+                deletion_results["object_store_error"] = "No se pudo eliminar del object store"
+        except ValueError:
+            logger.info("ModelManager no disponible, saltando eliminación del object store")
+            deletion_results["object_store_error"] = "ModelManager no disponible"
+        except Exception as object_store_error:
+            logger.error(f"Error eliminando modelo del object store: {object_store_error}")
+            deletion_results["object_store_error"] = str(object_store_error)
+
+        # Eliminar archivo del disco si existe
+        model_path = model_info.get("file_path")
+        if model_path:
+            logger.info(f"Intentando eliminar archivo: {model_path}")
+            
+            if os.path.exists(model_path):
+                try:
+                    os.remove(model_path)
+                    logger.info(f"Archivo {model_path} eliminado exitosamente")
+                    deletion_results["deleted_from_file"] = True
+                    deletion_results["deleted_file"] = model_path
+                    
+                    if os.path.exists(model_path):
+                        logger.error(f"ERROR: El archivo {model_path} todavía existe después de intentar eliminarlo")
+                        deletion_results["file_error"] = f"El archivo no pudo ser eliminado completamente: {model_path}"
+                        
+                except PermissionError as perm_error:
+                    logger.error(f"Error de permisos al eliminar archivo: {model_path}")
+                    deletion_results["file_error"] = f"Sin permisos para eliminar el archivo: {model_path}"
+                except Exception as file_error:
+                    logger.error(f"Error al eliminar archivo {model_path}: {file_error}")
+                    deletion_results["file_error"] = str(file_error)
+            else:
+                logger.warning(f"Archivo del modelo no encontrado: {model_path}")
+                deletion_results["file_error"] = f"Archivo del modelo no encontrado: {model_path}"
         else:
-            logger.warning(f"Archivo del modelo no encontrado: {model_path}")
+            logger.info("No hay archivo asociado al modelo (solo en object store)")
+
+        # Limpiar cache de modelos
+        global models_cache
+        models_cache = {} 
+        logger.info(f"Cache de modelos limpiada completamente")
+
+        # Verificar si al menos una operación fue exitosa
+        if not deletion_results["deleted_from_object_store"] and not deletion_results["deleted_from_file"]:
+            deletion_results["success"] = False
+            error_details = []
+            if deletion_results["object_store_error"]:
+                error_details.append(f"Object store: {deletion_results['object_store_error']}")
+            if deletion_results["file_error"]:
+                error_details.append(f"Archivo: {deletion_results['file_error']}")
+            
             raise HTTPException(
-                status_code=404, 
-                detail=f"Archivo del modelo no encontrado: {model_path}"
+                status_code=500, 
+                detail=f"No se pudo eliminar el modelo de ninguna ubicación. Errores: {'; '.join(error_details)}"
             )
+        
+        return deletion_results
             
     except HTTPException:
         raise
@@ -761,7 +856,7 @@ async def get_inference_statistics(model_name: Optional[str] = None):
                 "avg_time_per_sample": sum(avg_times_per_sample) / len(avg_times_per_sample),
                 "last_prediction": entries[-1]["timestamp"] if entries else None,
                 "accuracy": entries[-1]["accuracy"] if entries and entries[-1]["accuracy"] else None,
-                "recent_entries": entries[-50:] if len(entries) > 50 else entries  # Últimas 50 entradas
+                "recent_entries": entries[-50:] if len(entries) > 50 else entries 
             }
         
         return {
@@ -881,9 +976,7 @@ class TrainingRequest(BaseModel):
     estrategia:List[str]
     dataset_name:str
 
-import json
-import numpy as np
-from fastapi.responses import JSONResponse
+
 
 class NumpyJSONResponse(JSONResponse):
     """
@@ -896,7 +989,6 @@ class NumpyJSONResponse(JSONResponse):
                 if isinstance(obj, np.integer):
                     return int(obj)
                 if isinstance(obj, np.floating):
-                    # Si es NaN o Inf, conviértelo a None (null en JSON)
                     if np.isnan(obj) or np.isinf(obj):
                         return None
                     return float(obj)
@@ -911,34 +1003,51 @@ async def train(params: TrainingRequest):
     Recibe los parámetros de entrenamiento, lanza el trabajo en segundo plano y devuelve un ID de experimento.
     """
     try:
-        logger.info('inicio')
+        logger.info('Iniciando entrenamiento con ModelManager')
+
+        # Asegurar que Ray esté inicializado
+        if not ray.is_initialized():
+            ray.init(ignore_reinit_error=True)
 
         df = pd.DataFrame(params.dataset)
         logger.info(f"Datos recibidos: {df.shape[0]} filas, {df.shape[1]} columnas")
+        model_manager = get_or_create_model_manager()
+        # Crear parámetros del trainer
         actor_params = {
             "df": df,
             "target_column": params.target_column,
             "problem_type": params.problem_type,
             "metrics": params.metrics,
-             "test_size": params.test_size,
+            "test_size": params.test_size,
             "random_state": params.random_state,
             "features_to_exclude": params.features_to_exclude,
             "transform_target": params.transform_target,
             "selected_models": params.selected_models,
-            'estrategia':params.estrategia,
-            'dataset_name':params.dataset_name
+            'estrategia': params.estrategia,
+            'dataset_name': params.dataset_name,
+            'model_manager': model_manager
         }
+        
         trainer_actor = Trainer(**actor_params)
+        
         result = trainer_actor.train()
-        logger.info(f"Entrenamiento iniciado con ID: {result}")
-        response_data= {
-            "message": "Entrenamiento iniciado con éxito.",
+        
+        stats = trainer_actor.get_model_registry_stats()
+        logger.info(f"Entrenamiento completado. Estadísticas del ModelManager: {stats}")
+        
+        response_data = {
+            "message": "Entrenamiento completado con éxito usando ModelManager.",
             "data": result,
+            "model_manager_stats": stats,
+            "models_trained": len([r for r in result if isinstance(r, dict) and r.get('status') == 'Success']) if isinstance(result, list) else 0
         }
+        
         return NumpyJSONResponse(content=response_data)
+        
     except Exception as e:
-        logger.info(e)
+        logger.error(f"Error en entrenamiento: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error al iniciar el entrenamiento: {str(e)}")
+
 
 
 @app.get("/models", summary="Listar modelos disponibles")
@@ -954,9 +1063,8 @@ async def list_models():
     except Exception as e:
         logger.error(f"Error listando modelos: {e}")
         raise HTTPException(status_code=500, detail=f"Error listando modelos: {str(e)}")
-  
 
-def main():
+def main(port:int):
     """Función principal para ejecutar la API FastAPI"""
     logger.info("Iniciando API de Modelos de Machine Learning Distribuidos")
     
@@ -964,7 +1072,7 @@ def main():
     
     config = {
         "host": "0.0.0.0",
-        "port": 8000,
+        "port": port,
         "reload": True,
         "log_level": "info"
     }
@@ -976,4 +1084,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main(8000)

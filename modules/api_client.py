@@ -81,7 +81,7 @@ class APIClient:
     def get_models(self) -> Dict:
         """Obtiene la lista de modelos disponibles"""
         try:
-            response = self.session.get(f"{self.base_url}/models", timeout=10)
+            response = self.session.get(f"{self.base_url}/models", timeout=30)
             response.raise_for_status()
             return {"status": "success", "data": response.json()}
         except Exception as e:
@@ -412,9 +412,14 @@ def render_explore_models_tab(api_client: APIClient):
     
     with col2:
         if st.button("🔄 Actualizar", key="refresh_models_api"):
-            st.rerun()   
-    models_response = api_client.get_models()
-    
+            st.rerun()
+    try:
+        models_response = api_client.get_models()
+    except:
+
+        st.info("No hay modelos disponibles. Entrene algunos modelos primero.")
+        return
+    st.write(models_response)
     if models_response["status"] == "error":
         st.error(f"Error obteniendo modelos: {models_response['error']}")
         return
@@ -459,8 +464,8 @@ def render_explore_models_tab(api_client: APIClient):
                     
                     col_info1, col_info2 = st.columns(2)
                     with col_info1:
-                        st.metric("Dataset", model_info.get("dataset", "N/A"))
-                        # Safe access to scores with error handling
+                        st.metric("Dataset", model_info.get("dataset_name", "N/A"))
+
                         scores = model_info.get('scores', {})
                         if isinstance(scores, dict):
                             accuracy = scores.get('Accuracy', 0)
@@ -699,8 +704,6 @@ def render_individual_prediction(api_client: APIClient, model_names: List[str], 
                                 features.append(value)
                             else:
                                 features[i] = value
-
-        # Botón de submit dentro del formulario
         submitted = st.form_submit_button("🔮 Realizar Predicción", type="primary")
         
         if submitted:

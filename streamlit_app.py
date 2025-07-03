@@ -51,7 +51,6 @@ api_client = APIClient()
 
 cluster_status = api_client.get_cluster_status()
 response = api_client.get_system_metrics()
-
 if response["status"] == "success":
     system_metrics = response["data"]
 else:

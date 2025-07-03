@@ -6,6 +6,34 @@ import time
 import numpy as np
 import random
 
+def get_model_manager_stats(api_client):
+    """Obtiene estadísticas del ModelManager"""
+    try:
+        response = api_client.get("/models/stats")
+        if response and 'model_manager_stats' in response:
+            return response['model_manager_stats']
+        return {"total_models": 0, "model_ids": []}
+    except Exception as e:
+        st.error(f"Error obteniendo estadísticas del ModelManager: {e}")
+        return {"total_models": 0, "model_ids": []}
+
+def search_models_in_manager(api_client, model_name_pattern=None, dataset_name_pattern=None):
+    """Busca modelos en el ModelManager"""
+    try:
+        params = {}
+        if model_name_pattern:
+            params['model_name'] = model_name_pattern
+        if dataset_name_pattern:
+            params['dataset_name'] = dataset_name_pattern
+        
+        response = api_client.get("/models/search", params=params)
+        if response and 'matching_models' in response:
+            return response['matching_models']
+        return []
+    except Exception as e:
+        st.error(f"Error buscando modelos: {e}")
+        return []
+
 def run_training_in_thread(training_params, metrics, api_client):
     """Ejecuta el entrenamiento en un hilo separado """
     try:
@@ -20,23 +48,55 @@ def run_training_in_thread(training_params, metrics, api_client):
         elif 'data' in response:
             data = response['data']
             
-            # Aceptar tanto listas como diccionarios
+            # Manejar tanto listas como diccionarios
             valid_structure = False
             
-            if isinstance(data, list):
-                # Verificar que sea una lista de modelos válidos
-                valid_structure = all('model_name' in item and 'scores' in item for item in data if isinstance(item, dict))
-            elif isinstance(data, dict):
-                # Verificar que sea un diccionario de modelos válidos
-                valid_structure = all('model_name' in item and 'scores' in item for item in data.values() if isinstance(item, dict))
+            if isinstance(data, dict):
+                # Caso esperado: diccionario de modelos
+                if data:  # Si no está vacío
+                    valid_structure = all(
+                        isinstance(item, dict) and 'model_name' in item and 'scores' in item 
+                        for item in data.values() 
+                        if isinstance(item, dict)
+                    )
+                else:
+                    # Diccionario vacío es válido
+                    valid_structure = True
+                    
+            elif isinstance(data, list):
+                # Manejar casos donde viene como lista (compatibilidad hacia atrás)
+                if len(data) > 0:
+                    first_item = data[0]
+                    if isinstance(first_item, dict):
+                        # Si es una lista con un diccionario de modelos
+                        if all(isinstance(v, dict) and 'model_name' in v and 'scores' in v for v in first_item.values() if isinstance(v, dict)):
+                            # Convertir a formato esperado
+                            data = first_item
+                            valid_structure = True
+                        # Si es una lista de modelos directamente
+                        elif 'model_name' in first_item and 'scores' in first_item:
+                            # Convertir lista de modelos a diccionario
+                            data = {model['model_name']: model for model in data if isinstance(model, dict)}
+                            valid_structure = True
+                else:
+                    # Lista vacía es válida
+                    valid_structure = True
             
             if valid_structure:
                 st.session_state['train_result'] = data
                 st.session_state['train_metrics'] = metrics
                 st.session_state['train_error'] = None
+                
+                # Guardar información adicional del ModelManager si está disponible
+                if 'model_manager_stats' in response:
+                    st.session_state['model_manager_stats'] = response['model_manager_stats']
+                    
+                if 'models_trained' in response:
+                    st.session_state['models_trained_count'] = response['models_trained']
+                    
             else:
                 st.session_state['train_result'] = None
-                st.session_state['train_error'] = f"Estructura de datos inesperada en la respuesta: {type(data)}"
+                st.session_state['train_error'] = f"Estructura de datos inesperada. Tipo: {type(data)}, Contenido: {str(data)[:200]}..."
                 print(f"Invalid data structure: {data}")
         else:
             st.session_state['train_result'] = None
@@ -90,25 +150,25 @@ classification_only_models = [
         ]
 
 regression_only_models=['Regresion lineal']
-def render_training_tab(cluster_status,api_client):
+def render_training_tab(cluster_status, api_client):
     """Renderiza la pestaña de entrenamiento con capacidades avanzadas"""
     st.header("🧠 Entrenamiento Distribuido")
     
     if not cluster_status['connected']:
         st.warning("Debes conectarte al cluster para ejecutar entrenamientos")
         return
-    
+
     training_tabs = st.tabs([
         "🚀 Entrenamiento",
-        "🚀Entrenamiento Avanzado"
+        "🚀 Entrenamiento Avanzado"
     ])
     
     with training_tabs[0]:
-        render_advanced_training(cluster_status,api_client)
+        render_advanced_training(api_client)
     
     with training_tabs[1]:
-        render(cluster_status,api_client)
-
+        render(cluster_status, api_client)
+    
 
 
 def render(cluster_status, api_client):
@@ -287,7 +347,7 @@ def render(cluster_status, api_client):
             </div>
             """, unsafe_allow_html=True)
            
-def render_advanced_training(cluster_status, api_client):
+def render_advanced_training(api_client):
     """Renderiza la interfaz de entrenamiento con selección manual del tipo de problema"""
     st.subheader("🚀 Entrenamiento Distribuido")
     
@@ -534,6 +594,9 @@ def render_advanced_training(cluster_status, api_client):
                             if st.session_state.get('train_result'):
                                 st.success("✅ ¡Entrenamiento completado!")
                                 plot_results(st.session_state['train_result'], st.session_state.get('train_metrics', []))
+                                
+                            
+                                
                             elif st.session_state.get('train_error'):
                                 st.error(st.session_state['train_error'])
                         except Exception as result_error:
@@ -562,29 +625,53 @@ def plot_results(data, metrics):
     if not data:
         st.warning("No hay datos para mostrar")
         return
-    if isinstance(data, dict):
 
-        data = list(data.values())
-        st.info(f"✅ Convertido diccionario de {len(data)} modelos a lista")
-    elif not isinstance(data, list):
-        st.error(f"Error: Se esperaba una lista o diccionario de resultados, pero se recibió: {type(data)}")
-        st.json(data)  
+    try:
+        if isinstance(data, dict):
+            data = list(data.values())
+        elif isinstance(data, list):
+            # Si es una lista, verificar el formato
+            if len(data) == 1 and isinstance(data[0], dict):
+                # Verificar si el primer elemento es un diccionario de modelos
+                first_item = data[0]
+                # Si contiene modelos como valores
+                if all(isinstance(v, dict) and 'model_name' in v for v in first_item.values() if isinstance(v, dict)):
+                    data = list(first_item.values())
+                else:
+                    st.error(f"Formato de datos no reconocido en lista: {first_item}")
+                    st.json(data)
+                    return
+            else:
+                st.info(f"✅ Lista de {len(data)} modelos recibida")
+        else:
+            st.error(f"Error: Se esperaba una lista o diccionario de resultados, pero se recibió: {type(data)}")
+            st.json(data)  
+            return
+    except Exception as data_error:
+        st.error(f"Error procesando formato de datos: {data_error}")
+        st.write("Datos recibidos para debug:")
+        st.json(data)
         return
     
-    # Filtrar solo los modelos exitosos
-    successful_models = [model for model in data if model.get('status') == 'Success']
+    successful_models = []
+    for model in data:
+        if isinstance(model, dict):
+            if model.get('status') == 'Success':
+                successful_models.append(model)
+            elif 'model_name' in model and 'scores' in model:
+                successful_models.append(model)
+        else:
+            st.warning(f"Elemento no es diccionario: {type(model)} - {model}")
     
     if not successful_models:
         st.warning("No hay modelos entrenados exitosamente para mostrar")
-        if data:
-            st.write("Datos recibidos:")
-            st.json(data)
+        st.write("Datos recibidos para debug:")
+        st.json(data)
         return
     
     st.markdown("## 📊 Resultados del Entrenamiento")
-    
     st.markdown("### 📈 Comparación entre Modelos")
-    
+
     comparison_data = []
     for model in successful_models:
         try:
@@ -651,8 +738,7 @@ def plot_results(data, metrics):
             st.markdown("#### 📏 Métricas de Rendimiento")
             cols_metrics = st.columns(3)
             metric_count = 0
-            
-            # Verificar que existan scores
+
             if 'scores' not in model_data:
                 st.error(f"Error: El modelo '{model_data.get('model_name', 'unknown')}' no tiene scores")
                 continue

@@ -1,10 +1,7 @@
 import streamlit as st
-import ray
-import os
 import pandas as pd
 import plotly.graph_objects as go
-import time
-import subprocess
+
 
 def plot_cluster_metrics(cluster_status):
     """Crea gráficos de métricas del cluster"""
@@ -205,77 +202,6 @@ def render_cluster_status_tab(cluster_status,system_metrics,api_client):
             st.success(f"✅ Todos los {cluster_status['alive_node_count']} nodos están operativos")
         
         plot_cluster_metrics(cluster_status)
-    if cluster_status['connected']:        # Sección para gestión de nodos (añadir/eliminar)
-        st.subheader("� Gestión de Nodos del Cluster")
-        
-        tab1, tab2 = st.tabs(["📌 Añadir Nodo", "🗑️ Eliminar Nodo"])
-        
-        with tab1:
-            
-            add_cpu = st.slider(
-                "Cantidad de CPUs para el nuevo nodo",
-                min_value=1,
-                max_value=2,
-                value=2,
-                step=1,
-                help="Cantidad de CPUs que tendrá el nuevo nodo"
-            )   
-            with st.form("add_node_form"):
-                col1, col2 = st.columns([3, 1])
-                with col1:
-                    worker_name = st.text_input("Nombre del Nodo", 
-                                               key="worker_name", 
-                                               placeholder="ej: worker-gpu1",
-                                               help="Nombre personalizado para identificar este nodo en el cluster")
-            with col2:
-                st.write("")
-                st.write("")
-                add_node_btn = st.form_submit_button("Añadir Nodo", 
-                                                    use_container_width=True,
-                                                    type="primary")
-            if add_node_btn and worker_name:
-                with st.spinner(f"Añadiendo nuevo nodo '{worker_name}' al cluster..."):
-                    success = add_external_worker(worker_name,add_cpu,api_client)
-                    
-                    if success:
-                        st.info("Puede tardar unos segundos en reflejarse en el dashboard del cluster.")
-                        st.cache_data.clear()
-                        st.rerun()
-            elif not worker_name and add_node_btn:
-                st.warning("Por favor ingresa un nombre para el nodo")
-        
-        with tab2:            
-            ray_nodes = api_client.get_all_ray_nodes()
-            if not ray_nodes:
-                st.warning("No se encontraron nodos Ray para eliminar.")
-                st.info("Parece que el cluster no está en ejecución o no hay contenedores Docker detectables.")
-            else:
-                st.success(f"Se encontraron {len(ray_nodes['data']['data'])} nodos en el cluster Ray.")
-                
-                with st.form("remove_node_form"):
-                    col1, col2 = st.columns([3, 1])
-                    with col1:
-                        node_to_remove = st.selectbox(
-                            "Selecciona el Nodo a Eliminar",
-                            options=ray_nodes['data']['data'],
-                            key="node_to_remove",
-                            help="Selecciona el nodo que deseas eliminar del cluster"
-                        )
-                    with col2:
-                        st.write("")
-                        st.write("")
-                        remove_node_btn = st.form_submit_button("Eliminar Nodo", 
-                                                            use_container_width=True,
-                                                            type="primary")
-                    
-                    if remove_node_btn and node_to_remove:
-                        with st.spinner(f"Eliminando nodo '{node_to_remove}' del cluster..."):
-                            success = remove_ray_node(node_to_remove,api_client)
-                            
-                            if success:
-                                st.info("El nodo ha sido eliminado. Puede tardar unos segundos en reflejarse en el dashboard.")
-                                st.cache_data.clear()
-                                st.rerun()
         
         st.divider()
         
@@ -356,36 +282,3 @@ def render_cluster_status_tab(cluster_status,system_metrics,api_client):
         st.error("Cluster no conectado")
         st.warning(f"Error: {cluster_status.get('error', 'Desconocido')}")
         st.info("Por favor verifica que el cluster Ray esté en ejecución y sea accesible desde esta máquina.")
-
-
-def add_external_worker(worker_name, add_cpu, api_client):
-    """Añade un worker externo usando la API REST"""
-    response = api_client.add_nodo(worker_name, add_cpu)
-    if response["status"] == "success":
-        data = response["data"]
-        if data.get("success"):
-            st.success(data.get("message", "Worker añadido exitosamente."))
-            return True
-        else:
-            st.error(data.get("error", "No se pudo añadir el worker."))
-            return False
-    else:
-        st.error(f"Error al añadir worker: {response.get('error', 'Error desconocido')}")
-        return False
-    
-    
-
-def remove_ray_node(node_name, api_client):
-    """Elimina un nodo Ray usando su nombre a través de la API REST"""
-    response = api_client.delete_nodo(node_name)
-    if response["status"] == "success":
-        data = response["data"]
-        if data.get("success"):
-            st.success(data.get("message", "Nodo eliminado exitosamente."))
-            return True
-        else:
-            st.error(data.get("error", "No se pudo eliminar el nodo."))
-            return False
-    else:
-        st.error(f"Error al eliminar nodo: {response.get('error', 'Error desconocido')}")
-        return False

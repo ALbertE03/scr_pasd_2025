@@ -27,8 +27,6 @@ services:
       echo 'Ray head node started successfully' &&
       tail -f /dev/null
       "
-    volumes:
-      - .:/app
     restart: unless-stopped
   ml-api:
     build: .
@@ -52,11 +50,6 @@ services:
       echo 'Starting ML API...' &&
       python api.py && tail -f /dev/null
       "
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - .:/app
-      - ./training_results:/app/training_results
-      - ./models:/app/models
     restart: unless-stopped
   streamlit-app:
     build: .
@@ -83,9 +76,7 @@ services:
       sleep 20 &&
       echo 'Starting Streamlit application...' &&
       streamlit run streamlit_app.py --server.address=0.0.0.0 --server.port=8501"
-    volumes:
-      - .:/app
-      - /var/run/docker.sock:/var/run/docker.sock
+
     restart: unless-stopped
   
   
@@ -114,8 +105,6 @@ services:
       echo 'Ray worker 1 started successfully' &&
       tail -f /dev/null
       "
-    volumes:
-      - .:/app
     restart: unless-stopped
 
   ray-worker-2:
@@ -143,8 +132,7 @@ services:
       echo 'Ray worker 2 started successfully' &&
       tail -f /dev/null
       "
-    volumes:
-      - .:/app
+
     restart: unless-stopped
 
   ray-worker-3:
@@ -172,8 +160,6 @@ services:
       echo 'Ray worker 3 started successfully' &&
       tail -f /dev/null
       "
-    volumes:
-      - .:/app
     restart: unless-stopped
 
 networks:
