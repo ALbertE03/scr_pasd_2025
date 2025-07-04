@@ -11,12 +11,14 @@ import pandas as pd
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, File, UploadFile, Query
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from fastapi.exceptions import RequestValidationError
+from pydantic import BaseModel, Field, validator, ValidationError
 import uvicorn
 import psutil
 import ray
 from modules.training import Trainer, ModelManager, create_global_model_manager, search_and_load_model, predict_with_stored_model
 import subprocess
+from sklearn.preprocessing import LabelEncoder
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -28,7 +30,6 @@ app = FastAPI(
     redoc_url="/redoc"
 )
 
-# Configurar CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -36,6 +37,25 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request, exc):
+    """Maneja errores de validación de Pydantic con mensajes más claros"""
+    error_details = []
+    for error in exc.errors():
+        field = " -> ".join(str(x) for x in error["loc"])
+        message = error["msg"]
+        error_details.append(f"Campo '{field}': {message}")
+    
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": "Error de validación en los datos de entrada",
+            "errors": error_details,
+            "type": "validation_error"
+        }
+    )
 
 trainer = None
 models_cache = {}
@@ -47,12 +67,11 @@ global_model_manager = None
 def get_or_create_model_manager():
     """Obtiene o crea una instancia del ModelManager como actor Ray"""
     try:
-        # Intentar obtener el actor existente
+        
         model_manager = ray.get_actor("model_manager")
         logger.info("ModelManager existente encontrado")
         return model_manager
     except ValueError:
-        # Si no existe, crear uno nuevo
         logger.info("Creando nuevo ModelManager")
         model_manager = create_global_model_manager()
         return model_manager
@@ -64,10 +83,63 @@ async def favicon():
     return JSONResponse(content={"message": "No favicon available"}, status_code=204)
 
 
+class NumpyJSONResponse(JSONResponse):
+    """
+    Una respuesta JSON personalizada para manejar tipos de datos de NumPy
+    que no son compatibles con JSON estándar.
+    """
+    def render(self, content: any) -> bytes:
+        class NumpyEncoder(json.JSONEncoder):
+            def default(self, obj):
+                if isinstance(obj, np.integer):
+                    return int(obj)
+                if isinstance(obj, np.floating):
+            
+                    if np.isnan(obj):
+                        return None
+                    if np.isinf(obj):
+                        return None  
+                    try:
+                        float_val = float(obj)
+                        if np.isnan(float_val) or np.isinf(float_val):
+                            return None
+                        return float_val
+                    except (ValueError, OverflowError):
+                        return None
+                if isinstance(obj, np.ndarray):
+                    
+                    array_clean = np.nan_to_num(obj, nan=None, posinf=None, neginf=None)
+                    return array_clean.tolist()
+                if isinstance(obj, (complex, np.complex64, np.complex128)):
+       
+                    return {"real": float(obj.real), "imag": float(obj.imag)}
+                if isinstance(obj, float):
+                    if np.isnan(obj) or np.isinf(obj):
+                        return None
+                    return obj
+                return super(NumpyEncoder, self).default(obj)
+
+        return json.dumps(content, cls=NumpyEncoder, allow_nan=False).encode("utf-8")
 class PredictionRequest(BaseModel):
     model_name: str = Field(..., description="Nombre del modelo a usar")
-    features: List[List[float]] = Field(..., description="Características para predicción")
+    features: List[List[Union[int, float, str]]] = Field(..., description="Características para predicción (pueden incluir valores categóricos)")
+    feature_names: Optional[List[str]] = Field(None, description="Nombres de las características") 
     return_probabilities: bool = Field(False, description="Retornar probabilidades además de predicciones")
+    
+    @validator('features')
+    def validate_features_basic(cls, v):
+        """Validaciones básicas de las características"""
+        if not v:
+            raise ValueError("No se proporcionaron características")
+            
+        if len(v) == 0:
+            raise ValueError("La lista de características está vacía")
+            
+        feature_lengths = [len(row) for row in v]
+        if len(set(feature_lengths)) > 1:
+            raise ValueError(f"Todas las filas deben tener la misma cantidad de características. Encontradas: {set(feature_lengths)}")
+            
+        return v
 
 class ModelInfo(BaseModel):
     model_name: str
@@ -113,12 +185,16 @@ def save_inference_stats(model_name: str, prediction_time: float, n_samples: int
         if model_name not in stats:
             stats[model_name] = []
 
+        safe_prediction_time = prediction_time if prediction_time is not None and np.isfinite(prediction_time) else 0.0
+        safe_n_samples = max(1, n_samples) if n_samples is not None else 1
+        safe_accuracy = accuracy if accuracy is not None and np.isfinite(accuracy) else None
+        
         inference_entry = {
             "timestamp": datetime.now().isoformat(),
-            "prediction_time": prediction_time,
+            "prediction_time": safe_prediction_time,
             "n_samples": n_samples,
-            "avg_time_per_sample": prediction_time / n_samples if n_samples > 0 else prediction_time,
-            "accuracy": accuracy
+            "avg_time_per_sample": safe_prediction_time / safe_n_samples,
+            "accuracy": safe_accuracy
         }
         
         stats[model_name].append(inference_entry)
@@ -196,7 +272,6 @@ def load_model_from_file(model_name: str, dataset_name: str = None, models_dir: 
 def get_available_models() -> Dict[str, Dict]:
     """Obtiene información de todos los modelos disponibles usando ModelManager o fallback a archivos"""
     try:
-        # Intentar usar ModelManager primero
         try:
             model_manager = ray.get_actor("model_manager")
             logger.info("Usando ModelManager para obtener modelos disponibles")
@@ -206,22 +281,21 @@ def get_available_models() -> Dict[str, Dict]:
             for model_id in all_model_ids:
                 try:
                     scores = ray.get(model_manager.get_scores.remote(model_id))
+                    atributes = ray.get(model_manager.get_atributes.remote(model_id))
                     if scores is None:
                         scores = {}
                         logger.warning(f"No se encontraron scores para modelo {model_id}")
                     
-                    # Asegurar que scores sea un diccionario serializable
                     if not isinstance(scores, dict):
                         logger.warning(f"Scores para modelo {model_id} no es un diccionario, convirtiendo")
                         scores = {}
                     
-                    # Convertir valores no serializables a strings
                     safe_scores = {}
                     for key, value in scores.items():
                         try:
                             if isinstance(value, (int, float, str, bool, list)):
                                 safe_scores[key] = value
-                            elif hasattr(value, 'tolist'):  # numpy arrays
+                            elif hasattr(value, 'tolist'):  
                                 safe_scores[key] = value.tolist()
                             else:
                                 safe_scores[key] = str(value)
@@ -234,7 +308,6 @@ def get_available_models() -> Dict[str, Dict]:
                     model_name = parts[-1]
                     dataset_name = "_".join(parts[:-1])
 
-                    # Obtener el tamaño del modelo desde el object store
                     object_size = None
                     try:
                         model_ref = ray.get(model_manager.get_model.remote(model_name, dataset_name))
@@ -255,7 +328,8 @@ def get_available_models() -> Dict[str, Dict]:
                             'scores': safe_scores,
                             "object_size": object_size,
                             "object_size_mb": round(object_size / (1024 * 1024), 2) if object_size else None,
-                            "object_size_kb": round(object_size / 1024, 2) if object_size else None
+                            "object_size_kb": round(object_size / 1024, 2) if object_size else None,
+                            **atributes
                         }
                         
                 except Exception as e:
@@ -271,7 +345,6 @@ def get_available_models() -> Dict[str, Dict]:
         
     except Exception as e:
         logger.error(f"Error obteniendo modelos del ModelManager: {e}")
-        # Fallback a archivos en caso de error
         logger.info("Intentando fallback a archivos...")
         return get_models_from_files()
 
@@ -309,7 +382,7 @@ def get_models_from_files() -> Dict[str, Dict]:
                 model_id = f"{dataset}_{model_base_name}"
                 
                 try:
-                    # Obtener información del archivo
+                    
                     file_stat = os.stat(model_path)
                     file_size = file_stat.st_size
                     file_modified = datetime.fromtimestamp(file_stat.st_mtime)
@@ -435,47 +508,44 @@ async def predict(request: PredictionRequest):
             )
 
         model_info = models[model_key]
-        model, model_path = load_model_from_file(
-            model_info["model_name"], 
-            model_info.get("dataset")
-        )
-
-        X = np.array(request.features)
-        logger.info(f"Realizando predicción con {X.shape[0]} muestras y {X.shape[1]} características")
-        logger.info(X)
-        columns = model_info.get('columns', [])
-        target = model_info.get('target', '')
-        predictions = None
-        prediction_error = None
-        used_dataframe = False  
         
-        feature_columns = []
-        if target and target in columns:
-            feature_columns = [col for col in columns if col != target]
-        else:
-            feature_columns = columns[:-1] if columns else []
+        model = None
+        model_path = None
         
         try:
-            predictions = model.predict(X)
-            logger.info(f'Predicción exitosa con numpy array: {predictions}')
-            used_dataframe = False
+            model_manager = ray.get_actor("model_manager")
+            parts = model_key.split('_')
+            model_name = parts[-1]
+            dataset_name = "_".join(parts[:-1])
+            
+            logger.info(f"Intentando cargar modelo desde ModelManager: {model_name}, dataset: {dataset_name}")
+            model_ref = ray.get(model_manager.get_model.remote(model_name, dataset_name))
+            
+            if model_ref is not None:
+                model = ray.get(model_ref)
+                model_path = f"object_store://{model_key}"
+                logger.info(f"Modelo {model_key} cargado exitosamente desde ModelManager")
+            else:
+                logger.warning(f"Modelo {model_key} no encontrado en ModelManager")
+                
+        except ValueError:
+            logger.warning("ModelManager no disponible, usando fallback a archivos")
         except Exception as e:
-            prediction_error = str(e)
-            logger.warning(f"Predicción con numpy array falló: {e}")
-        
-            try:
-                if feature_columns and len(feature_columns) == X.shape[1]:
-                    X_df = pd.DataFrame(X, columns=feature_columns)
-                    predictions = model.predict(X_df)
-                    logger.info(f'Predicción exitosa con DataFrame: {predictions}')
-                    used_dataframe = True
-                else:
-                    logger.warning(f"No se pudieron obtener nombres de columnas válidos. Columnas disponibles: {feature_columns}, características esperadas: {X.shape[1]}")
-                    raise Exception(f"Modelo requiere DataFrame con nombres de columnas pero no se pudieron determinar. Error original: {prediction_error}")
-                    
-            except Exception as df_error:
-                logger.error(f"Predicción con DataFrame también falló: {df_error}")
-                raise Exception(f"Predicción falló con numpy array ({prediction_error}) y DataFrame ({str(df_error)})")
+            logger.warning(f"Error cargando desde ModelManager: {e}, usando fallback a archivos")
+    
+        if model is None:
+            raise HTTPException(status_code=404, detail=f"Modelo {model_key} no encontrado")
+
+        X = np.array(request.features)
+        logger.info(request.feature_names)
+        df = pd.DataFrame(X, columns=request.feature_names)
+        logger.info(df)
+        try:
+            predictions = model.predict(df)
+            logger.info(f'Predicción exitosa: {len(predictions)} resultados')
+        except Exception as prediction_error:
+            logger.error(f"Error en predicción: {prediction_error}")
+            raise Exception(f"Error realizando predicción: {str(prediction_error)}")
         
         if predictions is None:
             raise Exception("No se pudieron realizar predicciones")
@@ -492,41 +562,6 @@ async def predict(request: PredictionRequest):
         model_accuracy = model_info.get('scores', {}).get("Accuracy")
         save_inference_stats(model_key, prediction_time, X.shape[0], model_accuracy)
 
-        if request.return_probabilities:
-            logger.error(f"Calculando probabilidades para modelo: {model_key}")
-            logger.error(f"Tipo de modelo: {type(model).__name__}")
-            logger.error(f"Tiene predict_proba: {hasattr(model, 'predict_proba')}")
-            
-            try:
-
-                if not hasattr(model, 'predict_proba'):
-                    logger.error(f"Modelo {model_key} ({type(model).__name__}) no tiene método predict_proba")
-                    response_data["probabilities"] = None
-                else:
-                    if used_dataframe:
-                        X_df = pd.DataFrame(X, columns=feature_columns)
-                        logger.info(f"Usando DataFrame para probabilidades: {X_df.columns.tolist()}")
-                        probabilities = model.predict_proba(X_df)
-                        logger.error(probabilities)
-                        logger.error(f"Probabilidades calculadas con DataFrame para {X.shape[0]} muestras")
-                    else:
-                        logger.info(f"Usando numpy array para probabilidades: shape {X.shape}")
-                        probabilities = model.predict_proba(X)
-                        logger.info(f"Probabilidades calculadas con numpy array para {X.shape[0]} muestras")
-                    
-                    logger.info(f"Probabilidades shape: {probabilities.shape}")
-                    logger.info(f"Probabilidades sample: {probabilities[0] if len(probabilities) > 0 else 'empty'}")
-                    response_data["probabilities"] = probabilities.tolist()
-                    logger.info(f"Probabilidades convertidas a lista exitosamente")
-                    
-            except AttributeError as attr_error:
-                logger.warning(f"Modelo {model_key} no soporta predict_proba: {attr_error}")
-                response_data["probabilities"] = None
-            except Exception as prob_error:
-                logger.error(f"Error calculando probabilidades: {prob_error}")
-                logger.error(f"Tipo de excepción: {type(prob_error).__name__}")
-                response_data["probabilities"] = None
-        
         return PredictionResponse(**response_data)
         
     except HTTPException:
@@ -623,7 +658,6 @@ async def delete_model(model_name: str):
             "file_error": None
         }
 
-        # Eliminar del object store usando ModelManager (si está disponible)
         try:
             model_manager = ray.get_actor("model_manager")
             delete_result = ray.get(model_manager.delete_model.remote(model_key))
@@ -640,7 +674,6 @@ async def delete_model(model_name: str):
             logger.error(f"Error eliminando modelo del object store: {object_store_error}")
             deletion_results["object_store_error"] = str(object_store_error)
 
-        # Eliminar archivo del disco si existe
         model_path = model_info.get("file_path")
         if model_path:
             logger.info(f"Intentando eliminar archivo: {model_path}")
@@ -668,12 +701,11 @@ async def delete_model(model_name: str):
         else:
             logger.info("No hay archivo asociado al modelo (solo en object store)")
 
-        # Limpiar cache de modelos
+        
         global models_cache
         models_cache = {} 
         logger.info(f"Cache de modelos limpiada completamente")
 
-        # Verificar si al menos una operación fue exitosa
         if not deletion_results["deleted_from_object_store"] and not deletion_results["deleted_from_file"]:
             deletion_results["success"] = False
             error_details = []
@@ -824,7 +856,7 @@ async def search_models(query: str):
         raise HTTPException(status_code=500, detail=f"Error en búsqueda: {str(e)}")
 
 
-@app.get("/inference-stats", summary="Estadísticas de inferencia")
+@app.get("/inference-stats", summary="Estadísticas de inferencia", response_class=NumpyJSONResponse)
 async def get_inference_statistics(model_name: Optional[str] = None):
     """Obtiene estadísticas de inferencia en tiempo real"""
     try:
@@ -843,73 +875,54 @@ async def get_inference_statistics(model_name: Optional[str] = None):
             if not entries:
                 continue
 
-            prediction_times = [entry["prediction_time"] for entry in entries]
-            avg_times_per_sample = [entry["avg_time_per_sample"] for entry in entries]
-            total_samples = sum(entry["n_samples"] for entry in entries)
+            valid_entries = []
+            for entry in entries:
+                if (entry.get("prediction_time") is not None and 
+                    np.isfinite(entry.get("prediction_time", 0)) and
+                    entry.get("n_samples") is not None and
+                    entry.get("n_samples", 0) > 0):
+                    valid_entries.append(entry)
+            
+            if not valid_entries:
+                continue
+                
+            prediction_times = [entry["prediction_time"] for entry in valid_entries]
+            avg_times_per_sample = [entry["avg_time_per_sample"] for entry in valid_entries 
+                                  if entry.get("avg_time_per_sample") is not None and 
+                                  np.isfinite(entry.get("avg_time_per_sample", 0))]
+            total_samples = sum(entry["n_samples"] for entry in valid_entries)
+            
+            safe_avg_prediction_time = (sum(prediction_times) / len(prediction_times) 
+                                      if prediction_times else 0.0)
+            safe_avg_time_per_sample = (sum(avg_times_per_sample) / len(avg_times_per_sample) 
+                                      if avg_times_per_sample else 0.0)
             
             aggregated_stats[model] = {
-                "total_predictions": len(entries),
+                "total_predictions": len(valid_entries),
                 "total_samples": total_samples,
-                "avg_prediction_time": sum(prediction_times) / len(prediction_times),
-                "min_prediction_time": min(prediction_times),
-                "max_prediction_time": max(prediction_times),
-                "avg_time_per_sample": sum(avg_times_per_sample) / len(avg_times_per_sample),
-                "last_prediction": entries[-1]["timestamp"] if entries else None,
-                "accuracy": entries[-1]["accuracy"] if entries and entries[-1]["accuracy"] else None,
-                "recent_entries": entries[-50:] if len(entries) > 50 else entries 
+                "avg_prediction_time": safe_avg_prediction_time,
+                "min_prediction_time": min(prediction_times) if prediction_times else 0.0,
+                "max_prediction_time": max(prediction_times) if prediction_times else 0.0,
+                "avg_time_per_sample": safe_avg_time_per_sample,
+                "last_prediction": valid_entries[-1]["timestamp"] if valid_entries else None,
+                "accuracy": (valid_entries[-1]["accuracy"] 
+                           if valid_entries and valid_entries[-1].get("accuracy") is not None 
+                           else None),
+                "recent_entries": valid_entries[-50:] if len(valid_entries) > 50 else valid_entries 
             }
         
-        return {
-            "stats": stats,
-            "aggregated": aggregated_stats,
+        response_data = {
+            "stats": clean_data_for_json(stats),
+            "aggregated": clean_data_for_json(aggregated_stats),
             "timestamp": datetime.now().isoformat()
         }
+        
+        return response_data
         
     except Exception as e:
         logger.error(f"Error obteniendo estadísticas de inferencia: {e}")
         raise HTTPException(status_code=500, detail=f"Error obteniendo estadísticas: {str(e)}")
-
-
-@app.post("/add/node", summary="Agregar nodo al cluster Ray")
-async def add_node_to_cluster(worker_name: str = Query(..., description="Nombre del worker"), add_cpu: int = Query(..., description="CPUs para el worker")):
-    """Agrega un nodo al cluster Ray (worker externo)"""
-    try:
-            
-        command = f"docker run -d --name ray_worker_{worker_name.lower().replace(" ","_")} --hostname ray_worker_{worker_name} --network scr_pasd_2025_ray-network -e RAY_HEAD_SERVICE_HOST=ray-head -e NODE_ROLE=worker -e LEADER_NODE=false -e FAILOVER_PRIORITY=3 -e ENABLE_AUTO_FAILOVER=false --shm-size=2gb scr_pasd_2025-ray-head bash -c 'echo Worker externo iniciando... && echo Esperando al cluster principal... && sleep 10 && echo Conectando al cluster existente... && ray start --address=ray-head:6379 --num-cpus={add_cpu} && echo Worker externo conectado exitosamente! && tail -f /dev/null'"
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            shell=True
-        )
-        if result.returncode == 0:
-            return {"success": True, "message": f"Worker externo 'ray_worker_{worker_name}' añadido exitosamente al cluster", "stdout": result.stdout}
-        else:
-            return {"success": False, "error": result.stderr}
-    except Exception as e:
-        logger.error(f"Excepción al añadir worker externo: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Excepción al añadir worker externo: {str(e)}")
-
-@app.delete("/remove/node", summary="Eliminar nodo del cluster Ray")
-async def remove_node_from_cluster(node_name: str = Query(..., description="Nombre del worker")):
-    try:
-        if node_name.startswith("ray-head") or node_name == "ray-head":
-            return {"success": False, "error": "No se puede eliminar el nodo principal (ray-head), ya que es necesario para el funcionamiento del cluster"}
-        command = f"docker stop {node_name} && docker rm {node_name}"
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            shell=True
-        )
-        if result.returncode == 0:
-            return {"success": True, "message": f"Nodo '{node_name}' eliminado exitosamente del cluster", "stdout": result.stdout}
-        else:
-            return {"success": False, "error": result.stderr}
-    except Exception as e:
-        logger.error(f"Excepción al eliminar nodo: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Excepción al eliminar nodo: {str(e)}")
-    
+   
 @app.get("/cluster/nodes", summary="Lista de nodos del cluster Ray")
 async def get_all_nodes_ray(command: str = Query(..., description="Comando shell para listar nodos Ray")):
     """Obtiene la lista de nodos del cluster Ray ejecutando un comando shell"""
@@ -928,14 +941,15 @@ async def get_all_nodes_ray(command: str = Query(..., description="Comando shell
         logger.error(f"Excepción al obtener nodos del cluster: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Excepción al obtener nodos del cluster: {str(e)}")
 
-@app.get("/system/status", summary="Estado del sistema (host)")
+@app.get("/system/status", summary="Estado del sistema (host)", response_class=NumpyJSONResponse)
 async def system_status():
     """Devuelve información de uso de CPU, memoria y disco del sistema host"""
     try:
         cpu_percent = psutil.cpu_percent(interval=1)
         memory = psutil.virtual_memory()
         disk = psutil.disk_usage('/')
-        return {
+        
+        system_data = {
             "cpu_percent": cpu_percent,
             "memory_percent": memory.percent,
             "memory_available": memory.available / (1024**3),  # GB
@@ -944,6 +958,8 @@ async def system_status():
             "disk_free": disk.free / (1024**3),  # GB
             "disk_total": disk.total / (1024**3)  # GB
         }
+        
+        return clean_data_for_json(system_data)
     except Exception as e:
         logger.error(f"Error obteniendo estado del sistema: {e}")
         raise HTTPException(status_code=500, detail=f"Error obteniendo estado del sistema: {str(e)}")
@@ -975,28 +991,34 @@ class TrainingRequest(BaseModel):
     selected_models: List[str] = Field(..., description="Lista de nombres de modelos a entrenar")
     estrategia:List[str]
     dataset_name:str
+    hyperparams: Optional[Dict[str, Dict[str, Any]]] = Field(default={}, description="Hiperparámetros personalizados por modelo")
 
 
 
-class NumpyJSONResponse(JSONResponse):
+def clean_data_for_json(data):
     """
-    Una respuesta JSON personalizada para manejar tipos de datos de NumPy
-    que no son compatibles con JSON estándar.
+    Recursively clean data to ensure JSON compliance by handling NaN, inf, and other problematic values.
     """
-    def render(self, content: any) -> bytes:
-        class NumpyEncoder(json.JSONEncoder):
-            def default(self, obj):
-                if isinstance(obj, np.integer):
-                    return int(obj)
-                if isinstance(obj, np.floating):
-                    if np.isnan(obj) or np.isinf(obj):
-                        return None
-                    return float(obj)
-                if isinstance(obj, np.ndarray):
-                    return obj.tolist()
-                return super(NumpyEncoder, self).default(obj)
+    if isinstance(data, dict):
+        return {key: clean_data_for_json(value) for key, value in data.items()}
+    elif isinstance(data, list):
+        return [clean_data_for_json(item) for item in data]
+    elif isinstance(data, (np.integer, int)):
+        return int(data)
+    elif isinstance(data, (np.floating, float)):
+        if np.isnan(data) or np.isinf(data):
+            return None
+        return float(data)
+    elif isinstance(data, np.ndarray):
+        cleaned_array = np.nan_to_num(data, nan=None, posinf=None, neginf=None)
+        return cleaned_array.tolist()
+    elif isinstance(data, (complex, np.complex64, np.complex128)):
+        real_part = float(data.real) if np.isfinite(data.real) else None
+        imag_part = float(data.imag) if np.isfinite(data.imag) else None
+        return {"real": real_part, "imag": imag_part}
+    else:
+        return data
 
-        return json.dumps(content, cls=NumpyEncoder).encode("utf-8")
 @app.post('/train/oneDataset', summary='Entrena varios modelos en el mismo dataset')
 async def train(params: TrainingRequest):
     """
@@ -1004,15 +1026,13 @@ async def train(params: TrainingRequest):
     """
     try:
         logger.info('Iniciando entrenamiento con ModelManager')
-
-        # Asegurar que Ray esté inicializado
         if not ray.is_initialized():
             ray.init(ignore_reinit_error=True)
 
         df = pd.DataFrame(params.dataset)
         logger.info(f"Datos recibidos: {df.shape[0]} filas, {df.shape[1]} columnas")
         model_manager = get_or_create_model_manager()
-        # Crear parámetros del trainer
+
         actor_params = {
             "df": df,
             "target_column": params.target_column,
@@ -1025,7 +1045,8 @@ async def train(params: TrainingRequest):
             "selected_models": params.selected_models,
             'estrategia': params.estrategia,
             'dataset_name': params.dataset_name,
-            'model_manager': model_manager
+            'model_manager': model_manager,
+            'hyperparams': params.hyperparams
         }
         
         trainer_actor = Trainer(**actor_params)
@@ -1082,6 +1103,45 @@ def main(port:int):
     
     uvicorn.run("api:app", **config)
 
+
+
+def prepare_prediction_data(features, feature_names=None, model_info=None):
+    """
+    Prepara los datos para predicción de manera simple y robusta
+    """
+    try:
+        if feature_names and len(feature_names) == len(features[0]):
+            df = pd.DataFrame(features, columns=feature_names)
+        else:
+            df = pd.DataFrame(features, columns=[f'feature_{i}' for i in range(len(features[0]))])
+        
+        logger.info(f"DataFrame creado: {df.shape}")
+ 
+        for col in df.columns:
+      
+            df[col] = df[col].fillna(0)
+
+            try:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+            except:
+            
+                try:
+                    le = LabelEncoder()
+                    df[col] = le.fit_transform(df[col].astype(str))
+                except:
+                  
+                    df[col] = 0
+        
+        df = df.apply(pd.to_numeric, errors='coerce').fillna(0)
+        
+        logger.info(f"Datos procesados: {df.shape}, tipos: {df.dtypes.to_dict()}")
+        return df
+        
+    except Exception as e:
+        logger.error(f"Error en preparación de datos: {e}")
+        fallback_df = pd.DataFrame(0, index=range(len(features)), columns=range(len(features[0])))
+        logger.warning("Usando fallback con ceros")
+        return fallback_df
 
 if __name__ == "__main__":
     main(8000)

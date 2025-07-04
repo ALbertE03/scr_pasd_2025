@@ -4,7 +4,7 @@ import pandas as pd
 import os
 import time
 import random
-from typing import Dict, List
+from typing import Dict, List, Union
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
@@ -71,7 +71,7 @@ class APIClient:
         """Verifica el estado de salud de la API"""
         try:
             print(f"Verificando salud de API en: {self.base_url}/health")
-            response = self.session.get(f"{self.base_url}/health", timeout=5)
+            response = self.session.get(f"{self.base_url}/health", timeout=30)
             response.raise_for_status()
             return {"status": "success", "data": response.json()}
         except Exception as e:
@@ -105,13 +105,14 @@ class APIClient:
         except Exception as e:
             return {"status": "error", "error": str(e)}
     
-    def predict(self, model_name: str, features: List[List[float]],features_name, return_probabilities: bool = False,) -> Dict:
+    def predict(self, model_name: str, features: List[List[Union[int, float]]], features_name, return_probabilities: bool = False,) -> Dict:
         """Realiza predicciones usando un modelo"""
         try:
             
             payload = {
                 "model_name": model_name,
                 "features": features,
+                "feature_names": features_name,
                 "return_probabilities": return_probabilities
             }
             response = self.session.post(f"{self.base_url}/predict", json=payload, timeout=30)
@@ -265,83 +266,6 @@ class APIClient:
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
-    def predict_concurrent(self, model_name: str, features_list: List[List[List[float]]], return_probabilities: bool = False) -> Dict:
-        """Realiza múltiples predicciones concurrentes usando un modelo
-        
-        Args:
-            model_name: Nombre del modelo a utilizar
-            features_list: Lista de lotes de características (cada lote es una lista de muestras)
-            return_probabilities: Si se deben devolver las probabilidades
-            
-        Returns:
-            Diccionario con los resultados de todas las predicciones
-        """
-        import concurrent.futures
-        
-        try:
-            results = []
-            errors = []
-            
-            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-                futures = []
-                for features_batch in features_list:
-                    payload = {
-                        "model_name": model_name,
-                        "features": features_batch,
-                        "return_probabilities": return_probabilities
-                    }
-                    
-                    future = executor.submit(
-                        self.session.post,
-                        f"{self.base_url}/predict",
-                        json=payload,
-                        timeout=30
-                    )
-                    futures.append(future)
-
-                for future in concurrent.futures.as_completed(futures):
-                    try:
-                        response = future.result()
-                        response.raise_for_status()
-                        results.append(response.json())
-                    except Exception as e:
-                        errors.append(str(e))
-            
-            if not results:
-                return {"status": "error", "error": f"Todos los intentos fallaron: {errors}"}
-            
-
-            combined_results = {
-                "predictions": [],
-                "prediction_time": 0,
-                "feature_count": 0,
-                "n_samples": 0
-            }
-            
-            if return_probabilities:
-                combined_results["probabilities"] = []
-            
-            for result in results:
-                if "predictions" in result:
-                    combined_results["predictions"].extend(result["predictions"])
-                    combined_results["prediction_time"] += result.get("prediction_time", 0)
-                    combined_results["feature_count"] += result.get("feature_count", 0)
-                    combined_results["n_samples"] += result.get("n_samples", len(result["predictions"]))
-                    
-                    if return_probabilities and "probabilities" in result:
-                        combined_results["probabilities"].extend(result["probabilities"])
-            
-            if results:
-                combined_results["avg_prediction_time"] = combined_results["prediction_time"] / len(results)
-                combined_results["avg_time_per_sample"] = (
-                    combined_results["prediction_time"] / combined_results["n_samples"] 
-                    if combined_results["n_samples"] > 0 else 0
-                )
-                        
-            return {"status": "success", "data": combined_results}
-        except Exception as e:
-            return {"status": "error", "error": f"Error en predicción concurrente: {str(e)}"}
-
     def get_system_metrics(self):
         """Obtiene métricas del sistema desde el endpoint /system/status"""
         try:
@@ -481,7 +405,7 @@ def render_explore_models_tab(api_client: APIClient):
                         else:
                             training_time = 0
                         st.metric("Tiempo Entrenamiento", f"{training_time:.2f}s")
-                        st.metric("Tamaño Archivo", f"{model_info.get('file_size_mb', 0):.2f} MB")
+                        st.metric("Tamaño Archivo", f"{model_info.get('object_size_kb', 0):.2f} KB")
                     
                     col_btn1, col_btn2 = st.columns(2)
                     
@@ -535,19 +459,17 @@ def render_individual_prediction(api_client: APIClient, model_names: List[str], 
     """Renderiza predicción individual dentro de un formulario"""
     st.subheader("📝 Predicción Individual")
     
-    # Controles principales fuera del formulario (selección de modelo)
     selected_model = st.selectbox("Seleccionar Modelo", model_names)    
     
     if not selected_model:
         return
     
     model_info = models[selected_model]
-    dataset_name = model_info.get('dataset', '')
+    dataset_name = model_info.get('dataset_name', '') or model_info.get('dataset', '')
     columns_to_exclude = model_info.get("columns_to_exclude", [])
     feature_names = model_info.get("columns", [])
     target = model_info.get('target')
-    
-    # Filtrado de columnas
+
     if feature_names:
         feature_names = [x for x in feature_names if x not in columns_to_exclude and x != target]
     
@@ -558,7 +480,6 @@ def render_individual_prediction(api_client: APIClient, model_names: List[str], 
         st.error("⚠️ No se encontraron características válidas para este modelo.")
         return
     
-    # Mostrar información del modelo
     scores = model_info.get('scores', {})
     accuracy = scores.get('Accuracy', 0) if isinstance(scores, dict) else 0
     
@@ -568,7 +489,120 @@ def render_individual_prediction(api_client: APIClient, model_names: List[str], 
     **Características:** {n_features}
     """)
 
-    # Generar valores de ejemplo
+
+    prediction_mode = st.radio(
+        "Modo de Predicción",
+        ["Manual", "Archivo CSV"],
+        help="Selecciona 'Manual' para introducir valores individuales o 'Archivo CSV' para cargar múltiples filas"
+    )
+
+    if prediction_mode == "Archivo CSV":
+        render_batch_prediction_mode(api_client, selected_model, model_info, feature_names, data_types, n_features)
+    else:
+        render_manual_prediction_mode(api_client, selected_model, model_info, feature_names, data_types, n_features)
+
+
+def render_batch_prediction_mode(api_client: APIClient, selected_model: str, model_info: Dict, feature_names: List[str], data_types: List, n_features: int):
+    """Renderiza el modo de predicción por lotes desde archivo CSV"""
+    st.subheader("📁 Predicción desde Archivo CSV")
+    
+    st.markdown("""
+    **Instrucciones:**
+    1. Sube un archivo CSV con las características para predicción
+    2. El archivo debe tener exactamente **{n_features}** columnas
+    3. Las columnas deben estar en el mismo orden que las características del modelo
+    4. Se realizará una predicción por cada fila del archivo
+    """.format(n_features=n_features))
+    
+    uploaded_file = st.file_uploader(
+        "Seleccionar archivo CSV",
+        type=['csv'],
+        help=f"El archivo debe tener exactamente {n_features} columnas con las características del modelo"
+    )
+    
+    if uploaded_file is not None:
+        try:
+            df = pd.read_csv(uploaded_file)
+            
+            
+            # Validar número de columnas
+            if df.shape[1] != n_features:
+                st.error(f"❌ Error: El archivo tiene {df.shape[1]} columnas, pero se esperan {n_features} columnas.")
+                st.info("Por favor, asegúrate de que el archivo tenga la estructura correcta.")
+                return
+            st.success(f"✅ Archivo cargado: {df.shape[0]} filas, {df.shape[1]} columnas")
+            # Mostrar preview del archivo
+            st.subheader("Vista previa del archivo")
+            st.dataframe(df.head(10), use_container_width=True)
+            
+            if df.shape[0] > 10:
+                st.info(f"Mostrando las primeras 10 filas de {df.shape[0]} total.")
+            
+            validation_errors = []
+            for i, (col_name, expected_dtype) in enumerate(zip(feature_names, data_types)):
+                col_data = df.iloc[:, i]
+                
+                if pd.api.types.is_numeric_dtype(expected_dtype):
+                    if not pd.api.types.is_numeric_dtype(col_data):
+                        try:
+                            pd.to_numeric(col_data, errors='raise')
+                        except:
+                            validation_errors.append(f"Columna {i+1} ({col_name}): se esperan valores numéricos")
+                
+                elif pd.api.types.is_bool_dtype(expected_dtype):
+                    unique_vals = col_data.unique()
+                    if not all(val in [True, False, 'True', 'False', 'true', 'false', 1, 0] for val in unique_vals if pd.notna(val)):
+                        validation_errors.append(f"Columna {i+1} ({col_name}): se esperan valores booleanos")
+            
+            if validation_errors:
+                st.warning("⚠️ Se encontraron posibles problemas de validación:")
+                for error in validation_errors:
+                    st.write(f"- {error}")
+                st.info("Se intentará convertir automáticamente los tipos de datos durante la predicción.")
+            
+            col1, col2 = st.columns(2)
+            return_probabilities = False
+            with col2:
+                max_rows = st.number_input("Máximo de filas a procesar", min_value=1, max_value=min(1000, df.shape[0]), value=min(100, df.shape[0]))
+            
+            if st.button("🔮 Realizar Predicciones", type="primary"):
+                df_to_process = df.head(max_rows)
+                
+                with st.spinner(f"Realizando predicciones para {len(df_to_process)} filas..."):
+                    try:
+                        features_list = df_to_process.values.tolist()
+
+                        prediction_response = api_client.predict(
+                            selected_model, 
+                            features_list,
+                            feature_names,
+                            return_probabilities
+                        )
+                        
+                        if prediction_response["status"] == "error":
+                            st.error(f"Error en predicción: {prediction_response['error']}")
+                            st.info("Intenta verificar que los tipos de datos sean compatibles con el modelo.")
+                        else:
+                            result = prediction_response["data"]
+                            # Validar que tengamos predicciones
+                            if not result.get("predictions"):
+                                st.error("No se obtuvieron predicciones del modelo")
+                            elif len(result["predictions"]) == 0:
+                                st.error("El modelo devolvió una lista vacía de predicciones")
+                            else:
+                                display_batch_prediction_results(result, df_to_process, return_probabilities)
+                            
+                    except Exception as e:
+                        st.error(f"Error al procesar el archivo: {str(e)}")
+                        st.info("Verifica que los datos del archivo sean compatibles con el modelo.")
+        
+        except Exception as e:
+            st.error(f"Error al leer el archivo: {str(e)}")
+            st.info("Asegúrate de que el archivo sea un CSV válido.")
+
+
+def render_manual_prediction_mode(api_client: APIClient, selected_model: str, model_info: Dict, feature_names: List[str], data_types: List, n_features: int):
+    """Renderiza el modo de predicción manual"""
     example_features = []
     for i, dt in enumerate(data_types):
         feature_name = feature_names[i] if i < len(feature_names) else f"Feature_{i+1}"
@@ -712,6 +746,7 @@ def render_individual_prediction(api_client: APIClient, model_names: List[str], 
                     prediction_response = api_client.predict(
                         selected_model, 
                         [features],
+                        feature_names,
                         False
                     )
                     
@@ -719,10 +754,119 @@ def render_individual_prediction(api_client: APIClient, model_names: List[str], 
                         st.error(f"Error en predicción: {prediction_response['error']}")
                     else:
                         result = prediction_response["data"]
-                        display_prediction_results(result, False)  # No mostrar probabilidades
+                        display_prediction_results(result, False) 
                         
                 except Exception as e:
                     st.error(f"Error al conectar con el servidor: {str(e)}")
+
+
+def display_batch_prediction_results(result, input_df, show_probabilities):
+    """Muestra los resultados de predicciones en lote"""
+    try:
+        # Validar que tenemos los datos necesarios
+        if not result or not result.get("predictions"):
+            st.error("❌ No se recibieron predicciones válidas del modelo")
+            return
+        
+        predictions = result["predictions"]
+        if not predictions or len(predictions) == 0:
+            st.error("❌ El modelo devolvió una lista vacía de predicciones")
+            return
+        
+        st.success("✅ Predicciones completadas exitosamente")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("Total Predicciones", len(predictions))
+        
+        with col2:
+            st.metric("Tiempo Total", f"{result.get('prediction_time', 0):.3f}s")
+        
+        with col3:
+            avg_time = result.get('prediction_time', 0) / len(predictions) if predictions else 0
+            st.metric("Tiempo Promedio", f"{avg_time:.4f}s/predicción")
+        
+        with col4:
+            st.metric("Características", result.get("feature_count", 0))
+        
+        # Crear DataFrame con resultados
+        results_df = input_df.copy()
+        
+        # Verificar que el número de predicciones coincida con el número de filas de entrada
+        num_predictions = len(predictions)
+        num_input_rows = len(input_df)
+        
+        if num_predictions != num_input_rows:
+            st.warning(f"⚠️ Número de predicciones ({num_predictions}) no coincide con número de filas de entrada ({num_input_rows})")
+            
+            # Si hay menos predicciones que filas de entrada, ajustar el DataFrame
+            if num_predictions < num_input_rows:
+                results_df = input_df.iloc[:num_predictions].copy()
+                st.info(f"Mostrando solo las primeras {num_predictions} filas con predicciones exitosas")
+            # Si hay más predicciones que filas de entrada (poco probable), truncar predicciones
+            else:
+                predictions_to_use = predictions[:num_input_rows]
+                result["predictions"] = predictions_to_use
+                if "probabilities" in result and result["probabilities"]:
+                    result["probabilities"] = result["probabilities"][:num_input_rows]
+        
+        results_df['Predicción'] = predictions
+        
+        if show_probabilities and "probabilities" in result and result["probabilities"]:
+            # Verificar que las probabilidades también coincidan
+            if len(result["probabilities"]) == len(results_df):
+                # Si hay probabilidades, agregar la probabilidad máxima
+                max_probs = [max(prob) for prob in result["probabilities"]]
+                results_df['Confianza'] = [f"{prob:.4f}" for prob in max_probs]
+            else:
+                st.warning("⚠️ No se pueden mostrar probabilidades debido a discrepancia en dimensiones")
+        
+        st.subheader("Resultados de Predicciones")
+        st.dataframe(results_df, use_container_width=True)
+        
+        # Opción para descargar resultados
+        csv = results_df.to_csv(index=False)
+        st.download_button(
+            label="📥 Descargar resultados",
+            data=csv,
+            file_name=f"predicciones_{result.get('model_name', 'modelo')}.csv",
+            mime="text/csv"
+        )
+        
+        # Mostrar estadísticas de las predicciones
+        if predictions:
+            st.subheader("Estadísticas de Predicciones")
+            predictions_series = pd.Series(predictions)
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.write("**Distribución de predicciones:**")
+                value_counts = predictions_series.value_counts().sort_index()
+                st.bar_chart(value_counts)
+            
+            with col2:
+                st.write("**Resumen estadístico:**")
+                if predictions_series.dtype in ['int64', 'float64']:
+                    st.write(predictions_series.describe())
+                else:
+                    st.write(f"Valores únicos: {predictions_series.nunique()}")
+                    st.write(f"Valor más frecuente: {predictions_series.mode().iloc[0] if not predictions_series.mode().empty else 'N/A'}")
+                    st.write(f"Total de predicciones: {len(predictions_series)}")
+    
+    except Exception as e:
+        st.error(f"❌ Error mostrando resultados de predicción: {str(e)}")
+        st.info("Error técnico: Por favor, verifica los datos de entrada y vuelve a intentar")
+        # Mostrar información de debug si hay datos disponibles
+        if result:
+            st.write("**Información de debug:**")
+            st.write(f"- Predicciones recibidas: {len(result.get('predictions', []))}")
+            st.write(f"- Filas de entrada: {len(input_df)}")
+            st.write(f"- Tipo de predicciones: {type(result.get('predictions', []))}")
+            if result.get('predictions'):
+                st.write(f"- Primer elemento: {result['predictions'][0] if result['predictions'] else 'N/A'}")
+                st.write(f"- Tipo del primer elemento: {type(result['predictions'][0]) if result['predictions'] else 'N/A'}")
 
 def display_prediction_results(result, show_probabilities):
     """Muestra los resultados de la predicción"""
@@ -737,97 +881,6 @@ def display_prediction_results(result, show_probabilities):
     with col3:
         st.metric("Características", result["feature_count"])
          
-
-def render_batch_prediction(api_client: APIClient, model_names: List[str]):
-    """Renderiza predicción en lote"""
-    st.subheader("📁 Predicción en Lote")
-    
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        selected_model = st.selectbox("Seleccionar Modelo", model_names, key="batch_model")
-    
-    with col2:
-        return_probabilities = st.checkbox("Incluir Probabilidades", value=False, key="batch_probs")
-    
-    uploaded_file = st.file_uploader(
-        "Subir archivo CSV con características",
-        type=['csv'],
-        help="El archivo debe contener las características en columnas, una fila por muestra a predecir."
-    )
-    
-    if uploaded_file is not None:
-        try:
-            df = pd.read_csv(uploaded_file)
-            st.write("Vista previa del archivo:")
-            st.dataframe(df.head())
-            
-            st.info(f"Archivo contiene {len(df)} muestras con {len(df.columns)} características")
-            
-            if st.button("🚀 Ejecutar Predicción en Lote", type="primary"):
-                with st.spinner("Procesando predicciones en lote..."):
-                    uploaded_file.seek(0)
-                    file_data = uploaded_file.read()
-                    
-                    prediction_response = api_client.predict_batch(
-                        selected_model,
-                        file_data,
-                        uploaded_file.name,
-                        return_probabilities
-                    )
-                    
-                    if prediction_response["status"] == "error":
-                        st.error(f"Error en predicción: {prediction_response['error']}")
-                    else:
-                        result = prediction_response["data"]
-
-                        col1, col2, col3, col4 = st.columns(4)
-                        with col1:
-                            st.metric("Muestras Procesadas", result["n_samples"])
-                        with col2:
-                            st.metric("Características", result["feature_count"])
-                        with col3:
-                            st.metric("Tiempo Total", f"{result['prediction_time']:.3f}s")
-                        
-                        with col4:
-                            st.metric("Tiempo/Muestra", f"{result['prediction_time']/result['n_samples']:.4f}s")
-
-                        
-                            st.subheader("Resultados de Predicción")
-                        
-                        results_df = df.copy()
-                        results_df['Predicción'] = result["predictions"]
-                        
-                        if result.get("probabilities"):
-                            probs = result["probabilities"]
-                            for i, prob_row in enumerate(probs):
-                                for j, prob in enumerate(prob_row):
-                                    results_df[f'Prob_Clase_{j}'] = [prob_row[j] if idx == i else None for idx in range(len(probs))]
-                        
-                        st.dataframe(results_df)
-
-                        csv = results_df.to_csv(index=False)
-                        st.download_button(
-                            label="📥 Descargar Resultados CSV",
-                            data=csv,
-                            file_name=f"predicciones_{selected_model}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                            mime="text/csv"
-                        )
-
-                        st.subheader("Distribución de Predicciones")
-                        pred_counts = pd.Series(result["predictions"]).value_counts().sort_index()
-                        
-                        fig = px.bar(
-                            x=pred_counts.index,
-                            y=pred_counts.values,
-                            title="Distribución de Clases Predichas",
-                            labels={"x": "Clase Predicha", "y": "Cantidad"}
-                        )
-                        st.plotly_chart(fig, use_container_width=True)
-                        
-        except Exception as e:
-            st.error(f"Error leyendo archivo: {e}")
-
 
 def render_inference_stats_tab(api_client: APIClient):
     """Renderiza estadísticas de inferencia en tiempo real"""
@@ -1041,7 +1094,6 @@ def render_inference_stats_tab(api_client: APIClient):
                 fig.add_annotation(text="No hay datos disponibles", x=0.5, y=0.5)
         st.plotly_chart(fig, use_container_width=True)
     
-    # Add a bubble chart showing model efficiency
     if selected_model == "Todos" and aggregated_stats:
         st.subheader("Comparativa de Modelos")
         
@@ -1340,15 +1392,15 @@ def truncate_model_name(model_name: str, max_length: int = 20) -> str:
     if len(model_name) <= max_length:
         return model_name
     
-    # Si el nombre contiene "_", intentar mantener la parte más importante
+
     if "_" in model_name:
         parts = model_name.split("_")
-        # Mantener la primera parte (tipo de modelo) y truncar el resto
+
         model_type = parts[0]
         if len(model_type) > max_length:
             return model_type[:max_length-3] + "..."
         
-        remaining_length = max_length - len(model_type) - 4  # -4 para "_..."
+        remaining_length = max_length - len(model_type) - 4 
         if remaining_length > 0:
             dataset_part = "_".join(parts[1:])
             if len(dataset_part) > remaining_length:

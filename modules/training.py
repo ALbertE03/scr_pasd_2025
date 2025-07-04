@@ -10,23 +10,30 @@ from sklearn.pipeline import Pipeline
 from sklearn.metrics import (accuracy_score, f1_score, precision_score, recall_score, roc_auc_score, confusion_matrix,
                              mean_squared_error, r2_score, mean_absolute_error)
 from sklearn.linear_model import (LogisticRegression, SGDClassifier, PassiveAggressiveClassifier, 
-                                  LinearRegression, Ridge, Lasso)
-from sklearn.neighbors import KNeighborsClassifier
-from sklearn.svm import SVC, LinearSVC
+                                  LinearRegression, Ridge, Lasso, ElasticNet,
+                                  HuberRegressor,RANSACRegressor,TheilSenRegressor,
+                                  ARDRegression,BayesianRidge,PassiveAggressiveRegressor,SGDRegressor)
+from sklearn.neighbors import KNeighborsClassifier,KNeighborsRegressor
+from sklearn.svm import SVC, LinearSVC,SVR, LinearSVR
 from sklearn.naive_bayes import GaussianNB, BernoulliNB, MultinomialNB, ComplementNB
-from sklearn.tree import DecisionTreeClassifier
-from sklearn.ensemble import (RandomForestClassifier, GradientBoostingClassifier, AdaBoostClassifier, 
-                              ExtraTreesClassifier, RandomForestRegressor, GradientBoostingRegressor)
+from sklearn.tree import DecisionTreeClassifier,DecisionTreeRegressor
+from sklearn.ensemble import (RandomForestClassifier, GradientBoostingClassifier, AdaBoostClassifier,
+                                HistGradientBoostingRegressor,
+                              ExtraTreesClassifier, 
+                              RandomForestRegressor, GradientBoostingRegressor,
+                                GradientBoostingRegressor,
+                                AdaBoostRegressor,
+                                ExtraTreesRegressor,
+                                BaggingRegressor,
+                                VotingRegressor,)
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis, QuadraticDiscriminantAnalysis
-from sklearn.neural_network import MLPClassifier
+from sklearn.neural_network import MLPClassifier,MLPRegressor
 from sklearn.multiclass import OneVsRestClassifier, OneVsOneClassifier
 import logging
-from datetime import datetime
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
-
 
 @ray.remote
 class ModelManager:
@@ -35,10 +42,20 @@ class ModelManager:
     def __init__(self):
         self.model_registry = {} 
         self.scores={}
+        self.dataset_atribuetes={}
         
     def create_model_id(self, model_name, dataset_name):
         """Crear ID único para el modelo basado en nombre del modelo y dataset"""
         return f"{dataset_name}_{model_name}"
+    def save_atributes(self,name_model,dataset_name,**kwargs):
+        """Guardar atributos adicionales del modelo"""
+        id = self.create_model_id(name_model, dataset_name)
+        kwargs_ref = ray.put(kwargs) 
+        self.dataset_atribuetes[id] = kwargs_ref
+
+
+    def get_atributes(self, id):
+        return ray.get(self.dataset_atribuetes.get(id, {}))
     
     def store_model(self, model_name, dataset_name, model_pipeline):
         """Guardar modelo en object store y registrar la referencia"""
@@ -85,7 +102,7 @@ class ModelManager:
         """Obtener scores del modelo desde el object store"""
         if id in self.scores:
             score_ref = self.scores[id]
-            return ray.get(score_ref)  # Obtener los datos reales del object store
+            return ray.get(score_ref)  
         return None
     
     def save_scores(self, model, dataset, scores):
@@ -98,14 +115,12 @@ class ModelManager:
     def delete_model(self, model_id):
         """Eliminar modelo y sus scores del registry"""
         deleted = False
-        
-        # Eliminar del registry de modelos
+
         if model_id in self.model_registry:
             del self.model_registry[model_id]
             deleted = True
             logger.info(f"Modelo {model_id} eliminado del registry")
-        
-        # Eliminar scores asociados
+
         if model_id in self.scores:
             del self.scores[model_id]
             logger.info(f"Scores eliminados para modelo {model_id}")
@@ -125,6 +140,7 @@ def train_and_evaluate_model(task):
     model_name = task["model_name"]
     preprocessor = task["preprocessor"]
     model = task["model"]
+    data_type = task['data_type']
     X_df_ref = task["X_ref"]
     y_series_ref = task["y_ref"]
     metrics_to_calc = task["metrics_to_calc"]
@@ -133,28 +149,76 @@ def train_and_evaluate_model(task):
     random_state = task["random_state"]
     dataset_name = task["dataset_name"]
     model_manager = task["model_manager"]
-    
+    columns = task.get('columns', [])
+    target_column = task.get('target', None)
+    features_to_exclude = task.get('columns_to_exclude', [])
+    transform_target = task.get('transform_target', False)
+
     try:
         pipeline = Pipeline(steps=[('preprocessor', preprocessor), ('model', model)])
 
         X_df = ray.get(X_df_ref)
         y_series = ray.get(y_series_ref)
 
+     
+        y_transformed = y_series.copy()
+        log_transform_applied = False
+        
+        if transform_target and problem_type == "Regresión":
+            try:
+           
+                if (y_series > 0).all():
+                    y_transformed = np.log1p(y_series) 
+                    log_transform_applied = True
+                    logger.info(f"Transformación logarítmica aplicada al target para {model_name}")
+                else:
+                    logger.warning(f"No se puede aplicar transformación logarítmica a {model_name}: contiene valores <= 0")
+            except Exception as e:
+                logger.warning(f"Error aplicando transformación logarítmica a {model_name}: {e}")
+
+        use_stratify = False
+        if problem_type == "Clasificación":
+            class_counts = pd.Series(y_transformed).value_counts()
+            min_class_count = class_counts.min()
+        
+            min_test_samples_needed = len(class_counts)  
+            total_test_samples = int(len(y_transformed) * test_size)
+            
+            if min_class_count >= 2 and total_test_samples >= min_test_samples_needed:
+                use_stratify = True
+                logger.info(f"Usando estratificación. Clases: {len(class_counts)}, Min muestras por clase: {min_class_count}")
+            else:
+                logger.warning(f"No se puede usar estratificación. Min muestras por clase: {min_class_count}, "
+                             f"Muestras test necesarias: {min_test_samples_needed}, Disponibles: {total_test_samples}")
+
         X_train, X_test, y_train, y_test = train_test_split(
-            X_df, y_series, test_size=test_size, random_state=random_state,
-            stratify=y_series if problem_type == "Clasificación" else None
+            X_df, y_transformed, test_size=test_size, random_state=random_state,
+            stratify=y_transformed if use_stratify else None
         )
 
         start_time = time.time()
         pipeline.fit(X_train, y_train)
         
         y_pred = pipeline.predict(X_test)
+        
+        y_test_original = y_test.copy()
+        y_pred_original = y_pred.copy()
+        
+        if log_transform_applied:
+            try:
+                y_test_original = np.expm1(y_test)  
+                y_pred_original = np.expm1(y_pred)
+                logger.info(f"Transformación logarítmica invertida para métricas de {model_name}")
+            except Exception as e:
+                logger.warning(f"Error invirtiendo transformación logarítmica en {model_name}: {e}")
+        
         class_labels = task.get('class_labels')
         
         scores = {}
         for metric in metrics_to_calc:
             try:
                 if problem_type == "Clasificación":
+
                     if metric == "matriz de confusion":
                         if class_labels:
                             cm = confusion_matrix(y_test, y_pred, labels=class_labels)
@@ -185,24 +249,41 @@ def train_and_evaluate_model(task):
                         else:
                             scores[metric] = "N/A (no predict_proba)"
                 elif problem_type == "Regresión":
+
                     if metric == 'RMSE': 
-                        scores[metric] = np.sqrt(mean_squared_error(y_test, y_pred))
+                        scores[metric] = np.sqrt(mean_squared_error(y_test_original, y_pred_original))
                     elif metric == 'R2': 
-                        scores[metric] = r2_score(y_test, y_pred)
+                        scores[metric] = r2_score(y_test_original, y_pred_original)
                     elif metric == 'MAE': 
-                        scores[metric] = mean_absolute_error(y_test, y_pred)
+                        scores[metric] = mean_absolute_error(y_test_original, y_pred_original)
                     elif metric == 'MSE':
-                        scores[metric] = mean_squared_error(y_test, y_pred)
+                        scores[metric] = mean_squared_error(y_test_original, y_pred_original)
+                    elif metric == 'MAPE':
+                        
+                        scores[metric] = np.mean(np.abs((y_test_original - y_pred_original) / y_test_original)) * 100
             except Exception as e:
                 scores[metric] = f"Metric Error: {str(e)}"
 
         scores['Training Time (s)'] = round(time.time() - start_time, 2)
         scores['Test Size'] = len(X_test)
         scores['Train Size'] = len(X_train)
-
-        # Almacenar modelo en object store usando ModelManager
+        
+        if log_transform_applied:
+            scores['Log Transform Applied'] = True
+        
         model_id, model_ref = ray.get(model_manager.store_model.remote(model_name, dataset_name, pipeline))
         ray.get(model_manager.save_scores.remote(model_name, dataset_name, scores))
+        ray.get(model_manager.save_atributes.remote(
+            model_name,
+            dataset_name,
+            columns=columns,
+            target=target_column,
+            columns_to_exclude=features_to_exclude,
+            dataset=dataset_name,
+            data_type=data_type,
+            hyperparams_used=task.get('hyperparams_used', {}),
+            log_transform_applied=log_transform_applied
+        ))
         logger.info(f"[SUCCESS] Modelo {model_name} entrenado y almacenado con ID: {model_id}")
         
         return {
@@ -219,7 +300,7 @@ def train_and_evaluate_model(task):
 
 
 class Trainer:
-    def __init__(self, df, target_column, problem_type, metrics, test_size, random_state, features_to_exclude, transform_target, selected_models, estrategia, dataset_name,model_manager):
+    def __init__(self, df, target_column, problem_type, metrics, test_size, random_state, features_to_exclude, transform_target, selected_models, estrategia, dataset_name, model_manager, hyperparams=None):
         self.df = df
         self.target_column = target_column
         self.problem_type = problem_type
@@ -232,44 +313,106 @@ class Trainer:
         self.estrategia = estrategia
         self.dataset_name = dataset_name.replace(".csv", "")
         self.train_result_ref = None
+        self.hyperparams = hyperparams or {}
         
         self.model_manager = model_manager
         logger.info("ModelManager actor inicializado")
+        logger.info(f"Hiperparámetros recibidos para {len(self.hyperparams)} modelos")
+
+    def apply_hyperparams_to_model(self, model_name, model):
+        """Aplica hiperparámetros personalizados a un modelo"""
+        if model_name in self.hyperparams:
+            params = self.hyperparams[model_name]
+            try:
+            
+                valid_params = {}
+                model_params = model.get_params().keys()
+                
+                for param_name, param_value in params.items():
+                    if param_name in model_params:
+                        if param_value == "None":
+                            valid_params[param_name] = None
+                        elif param_value == "True":
+                            valid_params[param_name] = True
+                        elif param_value == "False":
+                            valid_params[param_name] = False
+                        elif isinstance(param_value, str) and param_value.replace('.', '').replace('-', '').isdigit():
+
+                            if '.' in param_value:
+                                valid_params[param_name] = float(param_value)
+                            else:
+                                valid_params[param_name] = int(param_value)
+                        else:
+                            valid_params[param_name] = param_value
+                    else:
+                        logger.warning(f"Parámetro '{param_name}' no válido para {model_name}. Parámetros disponibles: {list(model_params)}")
+                
+                if valid_params:
+                    model.set_params(**valid_params)
+                    logger.info(f"Aplicados hiperparámetros a {model_name}: {valid_params}")
+                else:
+                    logger.info(f"No se aplicaron hiperparámetros a {model_name} (ningún parámetro válido)")
+                    
+            except Exception as e:
+                logger.warning(f"Error aplicando hiperparámetros a {model_name}: {e}")
+        else:
+            logger.info(f"No hay hiperparámetros personalizados para {model_name}, usando valores por defecto")
+        
+        return model
 
     def get_models(self):
         rs = self.random_state
         base_models = {
-        # Clasificadores que soportan predict_proba por defecto o con ajustes
-        "RandomForest": RandomForestClassifier(random_state=rs),
-        "GradientBoosting": GradientBoostingClassifier(random_state=rs),
-        "AdaBoost": AdaBoostClassifier(random_state=rs),
-        "ExtraTrees": ExtraTreesClassifier(random_state=rs),
-        "DecisionTree": DecisionTreeClassifier(random_state=rs),
-        "LogisticRegression": LogisticRegression(random_state=rs, max_iter=1000),
-        "SGD": SGDClassifier(random_state=rs, loss='log_loss'),  
-        "SVM": SVC(probability=True, random_state=rs), 
-        "GaussianNB": GaussianNB(),
-        "BernoulliNB": BernoulliNB(),
-        "MultinomialNB": MultinomialNB(),
-        "ComplementNB": ComplementNB(),
-        "LDA": LinearDiscriminantAnalysis(),
-        "QDA": QuadraticDiscriminantAnalysis(),
-        "MLP": MLPClassifier(random_state=rs, max_iter=500),
-        
-        "PassiveAggressive": PassiveAggressiveClassifier(random_state=rs), 
-        "KNN": KNeighborsClassifier(),  
-        "LinearSVM": LinearSVC(random_state=rs, dual="auto"), 
-        
-        # Regresores (no aplican para probabilidades)
-        "LinearRegression": LinearRegression(),
-        "Ridge": Ridge(random_state=rs),
-        "Lasso": Lasso(random_state=rs),
-        "RandomForestRegressor": RandomForestRegressor(random_state=rs),
-        "GradientBoostingRegressor": GradientBoostingRegressor(random_state=rs),
-    }
-        
+                "RandomForest": RandomForestClassifier(random_state=rs),
+                "GradientBoosting": GradientBoostingClassifier(random_state=rs),
+                "AdaBoost": AdaBoostClassifier(random_state=rs),
+                "ExtraTrees": ExtraTreesClassifier(random_state=rs),
+                "DecisionTree": DecisionTreeClassifier(random_state=rs),
+                "LogisticRegression": LogisticRegression(random_state=rs, max_iter=1000),
+                "SGD": SGDClassifier(random_state=rs, loss='log_loss'),  
+                "SVM": SVC(probability=True, random_state=rs), 
+                "GaussianNB": GaussianNB(),
+                "BernoulliNB": BernoulliNB(),
+                "MultinomialNB": MultinomialNB(),
+                "ComplementNB": ComplementNB(),
+                "LDA": LinearDiscriminantAnalysis(),
+                "QDA": QuadraticDiscriminantAnalysis(),
+                "MLP": MLPClassifier(random_state=rs, max_iter=500),
+                "PassiveAggressive": PassiveAggressiveClassifier(random_state=rs), 
+                "KNN": KNeighborsClassifier(),  
+                "LinearSVM": LinearSVC(random_state=rs, dual="auto"), 
+                
+                # Regresores
+                "LinearRegression": LinearRegression(),
+                "Ridge": Ridge(random_state=rs),
+                "Lasso": Lasso(random_state=rs),
+                "ElasticNet": ElasticNet(random_state=rs),
+                "HuberRegressor": HuberRegressor(),
+                "RANSACRegressor": RANSACRegressor(random_state=rs),
+                "TheilSenRegressor": TheilSenRegressor(random_state=rs),
+                "ARDRegression": ARDRegression(),
+                "BayesianRidge": BayesianRidge(),
+                "PassiveAggressiveRegressor": PassiveAggressiveRegressor(random_state=rs),
+                "SGDRegressor": SGDRegressor(random_state=rs),
+                "DecisionTreeRegressor": DecisionTreeRegressor(random_state=rs),
+                "ExtraTreesRegressor": ExtraTreesRegressor(random_state=rs),
+                "RandomForestRegressor": RandomForestRegressor(random_state=rs),
+                "GradientBoostingRegressor": GradientBoostingRegressor(random_state=rs),
+                "HistGradientBoostingRegressor": HistGradientBoostingRegressor(random_state=rs),
+                "AdaBoostRegressor": AdaBoostRegressor(random_state=rs),
+                "SVR": SVR(),
+                "LinearSVR": LinearSVR(random_state=rs),
+                "KNeighborsRegressor": KNeighborsRegressor(),
+                "MLPRegressor": MLPRegressor(random_state=rs, max_iter=500),
+                "BaggingRegressor": BaggingRegressor(random_state=rs),
+                "VotingRegressor": VotingRegressor(estimators=[('lr', LinearRegression()), ('rf', RandomForestRegressor(random_state=rs))])
+        }
+                    
         selected_base_models = {name: model for name, model in base_models.items() if name in self.selected_models}
         logger.info(f"Modelos seleccionados: {list(selected_base_models.keys())}")
+        
+        for name, model in selected_base_models.items():
+            selected_base_models[name] = self.apply_hyperparams_to_model(name, model)
         
         if self.problem_type == "Clasificación" and self.estrategia and len(np.unique(self.df[self.target_column])) > 2:
             multiclass_models = {}
@@ -292,7 +435,6 @@ class Trainer:
         
         for result in results:
             if result.get('status') == 'Success':
-                # Los modelos ya están almacenados en ModelManager, solo guardamos metadatos
                 model_data = {
                     'model_name': result['model_name'],
                     'model_id': result['model_id'],
@@ -408,6 +550,8 @@ class Trainer:
                 else:
                     preprocessor_for_task = preprocessor_standard
 
+                hyperparams_used = self.hyperparams.get(name, {})
+
                 task = {
                     "model_name": name,
                     "preprocessor": preprocessor_for_task, 
@@ -420,7 +564,13 @@ class Trainer:
                     "test_size": self.test_size,
                     "random_state": self.random_state,
                     "dataset_name": self.dataset_name,
-                    "model_manager": self.model_manager  # Pasar ModelManager a la tarea
+                    "model_manager": self.model_manager,
+                    'data_type':[str(x) for x in self.df.dtypes.tolist()],
+                    'columns':self.df.columns.tolist(),
+                    'target':self.target_column,
+                    'columns_to_exclude':self.features_to_exclude,
+                    'hyperparams_used': hyperparams_used,
+                    'transform_target': self.transform_target
                 }
                 future = train_and_evaluate_model.remote(task)
                 futures.append(future)
@@ -432,12 +582,11 @@ class Trainer:
             logger.info(f"Entrenamiento completado. {len(successful_results)} modelos entrenados exitosamente.")
             
             self.save_results(successful_results)
-            
-            # Devolver directamente el diccionario de resultados, no envuelto en lista
+
             if self.train_result_ref:
                 return ray.get(self.train_result_ref)
             else:
-                # Convertir successful_results a formato diccionario si no hay train_result_ref
+
                 result_dict = {}
                 for result in successful_results:
                     if 'model_name' in result:
@@ -458,10 +607,9 @@ def create_global_model_manager():
 def search_and_load_model(model_manager, model_name, dataset_name):
     """Función de conveniencia para buscar y cargar un modelo específico"""
     try:
-        # Crear el ID esperado
+
         expected_id = f"{dataset_name}_{model_name}"
-        
-        # Verificar si existe
+
         all_ids = ray.get(model_manager.list_all_model_ids.remote())
         
         if expected_id in all_ids:
