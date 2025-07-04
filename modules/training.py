@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 
-@ray.remote
+@ray.remote(max_restarts=4, max_task_retries=4)
 class ModelManager:
     """Actor para gestionar el mapeo de modelos en el Ray object store"""
     
@@ -138,23 +138,26 @@ class ModelManager:
 def train_and_evaluate_model(task):
     """Entrena un solo modelo usando todos los datos"""
     model_name = task["model_name"]
-    preprocessor = task["preprocessor"]
-    model = task["model"]
-    data_type = task['data_type']
-    X_df_ref = task["X_ref"]
-    y_series_ref = task["y_ref"]
-    metrics_to_calc = task["metrics_to_calc"]
-    problem_type = task["problem_type"]
-    test_size = task["test_size"]
-    random_state = task["random_state"]
-    dataset_name = task["dataset_name"]
-    model_manager = task["model_manager"]
-    columns = task.get('columns', [])
-    target_column = task.get('target', None)
-    features_to_exclude = task.get('columns_to_exclude', [])
-    transform_target = task.get('transform_target', False)
-
+    start_overall_time = time.time()
+    max_training_time = task.get("max_training_time", 120)  # 2 minutos por modelo por defecto
+    
     try:
+        preprocessor = task["preprocessor"]
+        model = task["model"]
+        data_type = task['data_type']
+        X_df_ref = task["X_ref"]
+        y_series_ref = task["y_ref"]
+        metrics_to_calc = task["metrics_to_calc"]
+        problem_type = task["problem_type"]
+        test_size = task["test_size"]
+        random_state = task["random_state"]
+        dataset_name = task["dataset_name"]
+        model_manager = task["model_manager"]
+        columns = task.get('columns', [])
+        target_column = task.get('target', None)
+        features_to_exclude = task.get('columns_to_exclude', [])
+        transform_target = task.get('transform_target', False)
+
         pipeline = Pipeline(steps=[('preprocessor', preprocessor), ('model', model)])
 
         X_df = ray.get(X_df_ref)
@@ -197,7 +200,19 @@ def train_and_evaluate_model(task):
         )
 
         start_time = time.time()
+        
+        # Verificar timeout antes del entrenamiento
+        elapsed_time = time.time() - start_overall_time
+        if elapsed_time > max_training_time:
+            raise TimeoutError(f"Timeout alcanzado antes del entrenamiento para {model_name}")
+        
+        logger.info(f"Iniciando entrenamiento de {model_name} (tiempo límite: {max_training_time}s)")
         pipeline.fit(X_train, y_train)
+        
+        # Verificar timeout después del entrenamiento
+        elapsed_time = time.time() - start_overall_time
+        if elapsed_time > max_training_time:
+            logger.warning(f"Timeout alcanzado después del entrenamiento para {model_name}, continuando con predicciones...")
         
         y_pred = pipeline.predict(X_test)
         
@@ -294,13 +309,24 @@ def train_and_evaluate_model(task):
             'status': 'Success'
         }
         
+    except TimeoutError as e:
+        logger.error(f"[TIMEOUT] Timeout entrenando {model_name}: {e}")
+        return {
+            'model_name': model_name,
+            'status': 'Timeout',
+            'error': str(e)
+        }
     except Exception as e:
         logger.error(f"[FAILED] Error entrenando {model_name}: {e}", exc_info=True)
-        raise
+        return {
+            'model_name': model_name,
+            'status': 'Failed',
+            'error': str(e)
+        }
 
 
 class Trainer:
-    def __init__(self, df, target_column, problem_type, metrics, test_size, random_state, features_to_exclude, transform_target, selected_models, estrategia, dataset_name, model_manager, hyperparams=None):
+    def __init__(self, df, target_column, problem_type, metrics, test_size, random_state, features_to_exclude, transform_target, selected_models, estrategia, dataset_name, model_manager, hyperparams=None, training_timeout=300):
         self.df = df
         self.target_column = target_column
         self.problem_type = problem_type
@@ -314,10 +340,12 @@ class Trainer:
         self.dataset_name = dataset_name.replace(".csv", "")
         self.train_result_ref = None
         self.hyperparams = hyperparams or {}
+        self.training_timeout = training_timeout  
         
         self.model_manager = model_manager
         logger.info("ModelManager actor inicializado")
         logger.info(f"Hiperparámetros recibidos para {len(self.hyperparams)} modelos")
+        logger.info(f"Timeout de entrenamiento configurado: {self.training_timeout} segundos")
 
     def apply_hyperparams_to_model(self, model_name, model):
         """Aplica hiperparámetros personalizados a un modelo"""
@@ -570,16 +598,50 @@ class Trainer:
                     'target':self.target_column,
                     'columns_to_exclude':self.features_to_exclude,
                     'hyperparams_used': hyperparams_used,
-                    'transform_target': self.transform_target
+                    'transform_target': self.transform_target,
+                    'max_training_time': max(60, self.training_timeout // len(models_to_train))  # Distribuir tiempo entre modelos
                 }
                 future = train_and_evaluate_model.remote(task)
                 futures.append(future)
             
             logger.info(f"Iniciando entrenamiento de {len(futures)} modelos...")
-            results = ray.get(futures)
+            
+            # Obtener resultados con timeout
+            try:
+                timeout_seconds = self.training_timeout
+                results = ray.get(futures, timeout=timeout_seconds)
+                logger.info(f"Todos los modelos completados dentro del timeout de {timeout_seconds}s")
+            except ray.exceptions.GetTimeoutError:
+                logger.warning(f"Timeout de {timeout_seconds}s alcanzado. Obteniendo resultados parciales...")
+                ready_futures, remaining_futures = ray.wait(futures, num_returns=len(futures), timeout=0)
+                
+                results = []
+                # Obtener resultados de las tareas completadas
+                if ready_futures:
+                    completed_results = ray.get(ready_futures)
+                    results.extend(completed_results)
+                    logger.info(f"Obtenidos {len(completed_results)} resultados completados")
+                
+                # Cancelar tareas restantes
+                if remaining_futures:
+                    logger.warning(f"Cancelando {len(remaining_futures)} tareas no completadas")
+                    for future in remaining_futures:
+                        ray.cancel(future)
             
             successful_results = [result for result in results if result.get('status') == 'Success']
-            logger.info(f"Entrenamiento completado. {len(successful_results)} modelos entrenados exitosamente.")
+            timeout_results = [result for result in results if result.get('status') == 'Timeout']
+            failed_results = [result for result in results if result.get('status') == 'Failed']
+            
+            logger.info(f"Entrenamiento completado. {len(successful_results)} modelos exitosos, "
+                       f"{len(timeout_results)} timeouts, {len(failed_results)} fallos de {len(futures)} iniciados.")
+            
+            if timeout_results:
+                timeout_models = [r['model_name'] for r in timeout_results]
+                logger.warning(f"Modelos que excedieron el timeout: {timeout_models}")
+            
+            if failed_results:
+                failed_models = [r['model_name'] for r in failed_results]
+                logger.warning(f"Modelos que fallaron: {failed_models}")
             
             self.save_results(successful_results)
 

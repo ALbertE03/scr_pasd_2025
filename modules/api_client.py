@@ -343,7 +343,7 @@ def render_explore_models_tab(api_client: APIClient):
 
         st.info("No hay modelos disponibles. Entrene algunos modelos primero.")
         return
-    st.write(models_response)
+    #st.write(models_response)
     if models_response["status"] == "error":
         st.error(f"Error obteniendo modelos: {models_response['error']}")
         return
@@ -485,7 +485,6 @@ def render_individual_prediction(api_client: APIClient, model_names: List[str], 
     
     st.info(f"""
     **Dataset:** {dataset_name}  
-    **Accuracy:** {accuracy:.4f}  
     **Características:** {n_features}
     """)
 
@@ -547,7 +546,7 @@ def render_batch_prediction_mode(api_client: APIClient, selected_model: str, mod
                         try:
                             pd.to_numeric(col_data, errors='raise')
                         except:
-                            validation_errors.append(f"Columna {i+1} ({col_name}): se esperan valores numéricos")
+                            validation_errors.append(f"Columna ({col_name}): se esperan valores numéricos")
                 
                 elif pd.api.types.is_bool_dtype(expected_dtype):
                     unique_vals = col_data.unique()

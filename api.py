@@ -12,7 +12,7 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, File, Uplo
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
-from pydantic import BaseModel, Field, validator, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 import uvicorn
 import psutil
 import ray
@@ -89,44 +89,74 @@ class NumpyJSONResponse(JSONResponse):
     que no son compatibles con JSON estándar.
     """
     def render(self, content: any) -> bytes:
+        # Pre-limpiar todo el contenido antes de la serialización
+        content = clean_for_json(content, "root")
+        
         class NumpyEncoder(json.JSONEncoder):
             def default(self, obj):
                 if isinstance(obj, np.integer):
                     return int(obj)
                 if isinstance(obj, np.floating):
-            
-                    if np.isnan(obj):
-                        return None
-                    if np.isinf(obj):
+                    if np.isnan(obj) or np.isinf(obj):
                         return None  
                     try:
                         float_val = float(obj)
                         if np.isnan(float_val) or np.isinf(float_val):
                             return None
+                        # Verificar rango válido para JSON
+                        if abs(float_val) > 1e308:
+                            return 999999.0 if float_val > 0 else -999999.0
                         return float_val
-                    except (ValueError, OverflowError):
+                    except (ValueError, OverflowError, TypeError):
                         return None
                 if isinstance(obj, np.ndarray):
-                    
-                    array_clean = np.nan_to_num(obj, nan=None, posinf=None, neginf=None)
+                    # Limpiar array completo antes de convertir a lista
+                    array_clean = np.nan_to_num(obj, nan=0.0, posinf=999999.0, neginf=-999999.0)
                     return array_clean.tolist()
                 if isinstance(obj, (complex, np.complex64, np.complex128)):
-       
-                    return {"real": float(obj.real), "imag": float(obj.imag)}
+                    try:
+                        real_part = float(obj.real) if not (np.isnan(obj.real) or np.isinf(obj.real)) else 0.0
+                        imag_part = float(obj.imag) if not (np.isnan(obj.imag) or np.isinf(obj.imag)) else 0.0
+                        return {"real": real_part, "imag": imag_part}
+                    except:
+                        return {"real": 0.0, "imag": 0.0}
                 if isinstance(obj, float):
                     if np.isnan(obj) or np.isinf(obj):
                         return None
+                    if abs(obj) > 1e308:
+                        return 999999.0 if obj > 0 else -999999.0
                     return obj
+                if isinstance(obj, (np.bool_, bool)):
+                    return bool(obj)
+                # Recursivamente procesar listas y diccionarios
+                if isinstance(obj, dict):
+                    return {k: self.default(v) if not isinstance(v, (str, int, float, bool, type(None))) else v 
+                            for k, v in obj.items()}
+                if isinstance(obj, (list, tuple)):
+                    return [self.default(item) if not isinstance(item, (str, int, float, bool, type(None))) else item 
+                            for item in obj]
                 return super(NumpyEncoder, self).default(obj)
 
-        return json.dumps(content, cls=NumpyEncoder, allow_nan=False).encode("utf-8")
+        try:
+            return json.dumps(
+                content, 
+                cls=NumpyEncoder, 
+                allow_nan=False,
+                ensure_ascii=False,
+                separators=(",", ":")
+            ).encode("utf-8")
+        except (ValueError, TypeError) as e:
+            # Si aún hay problemas de serialización, usar fallback
+            logger.error(f"Error en serialización JSON: {e}")
+            fallback_content = {"error": "Data serialization error", "original_error": str(e)}
+            return json.dumps(fallback_content).encode("utf-8")
 class PredictionRequest(BaseModel):
     model_name: str = Field(..., description="Nombre del modelo a usar")
     features: List[List[Union[int, float, str]]] = Field(..., description="Características para predicción (pueden incluir valores categóricos)")
     feature_names: Optional[List[str]] = Field(None, description="Nombres de las características") 
     return_probabilities: bool = Field(False, description="Retornar probabilidades además de predicciones")
     
-    @validator('features')
+    @field_validator('features')
     def validate_features_basic(cls, v):
         """Validaciones básicas de las características"""
         if not v:
@@ -293,15 +323,19 @@ def get_available_models() -> Dict[str, Dict]:
                     safe_scores = {}
                     for key, value in scores.items():
                         try:
-                            if isinstance(value, (int, float, str, bool, list)):
-                                safe_scores[key] = value
-                            elif hasattr(value, 'tolist'):  
-                                safe_scores[key] = value.tolist()
-                            else:
-                                safe_scores[key] = str(value)
+                            # Limpiar valores infinitos y NaN antes de procesarlos
+                            cleaned_value = clean_for_json(value, f"scores.{key}")
+                            safe_scores[key] = cleaned_value
                         except Exception as convert_error:
-                            logger.warning(f"Error convirtiendo score {key}: {convert_error}")
-                            safe_scores[key] = str(value)
+                            logger.warning(f"Error convirtiendo score {key}={value}: {convert_error}")
+                            # Fallback más seguro para scores problemáticos
+                            if isinstance(value, (int, float)) and (np.isnan(value) or np.isinf(value)):
+                                safe_scores[key] = None
+                            else:
+                                try:
+                                    safe_scores[key] = clean_for_json(str(value), f"scores.{key}.str")
+                                except:
+                                    safe_scores[key] = None
                     
                     parts = model_id.split('_')
                     
@@ -438,12 +472,15 @@ async def health_check():
     
     try:
         cluster_info = ray.cluster_resources() if ray.is_initialized() else {}
+        # Limpiar los datos del cluster antes de incluirlos
+        clean_cluster_info = clean_for_json(cluster_info)
         health_status["ray_cluster"] = "connected" if cluster_info else "disconnected"
-        health_status["cluster_resources"] = cluster_info
+        health_status["cluster_resources"] = clean_cluster_info
     except Exception as e:
         health_status["ray_cluster"] = f"error: {str(e)}"
     
-    return health_status
+    # Limpiar toda la respuesta antes de enviarla
+    return clean_for_json(health_status)
 
 
 
@@ -471,13 +508,19 @@ async def get_model_info(model_name: str):
                 model_info.get("dataset",'')
             )
             model_info["model_type"] = type(model).__name__
-            model_info["model_parameters"] = getattr(model, 'get_params', lambda: {})()
+            # Limpiar los parámetros del modelo que pueden contener inf/nan
+            try:
+                raw_params = getattr(model, 'get_params', lambda: {})()
+                model_info["model_parameters"] = clean_for_json(raw_params, "model_parameters")
+            except Exception as param_error:
+                logger.warning(f"Error obteniendo parámetros del modelo: {param_error}")
+                model_info["model_parameters"] = {}
             model_info["loaded_from"] = model_path
         except Exception as e:
             logger.warning(f"No se pudo cargar modelo para información adicional: {e}")
             model_info["load_error"] = str(e)
         
-        return model_info
+        return clean_for_json(model_info)
         
     except HTTPException:
         raise
@@ -553,7 +596,7 @@ async def predict(request: PredictionRequest):
         
         response_data = {
             "model_name": model_key,
-            "predictions": predictions.tolist(),
+            "predictions": clean_for_json(predictions.tolist()),
             "feature_count": X.shape[1],
             "prediction_time": prediction_time,
             "model_path": model_path
@@ -562,7 +605,7 @@ async def predict(request: PredictionRequest):
         model_accuracy = model_info.get('scores', {}).get("Accuracy")
         save_inference_stats(model_key, prediction_time, X.shape[0], model_accuracy)
 
-        return PredictionResponse(**response_data)
+        return PredictionResponse(**clean_for_json(response_data))
         
     except HTTPException:
         raise
@@ -586,19 +629,27 @@ async def cluster_status():
         dead_nodes = [node for node in nodes if not node.get('Alive', False)]
 
         resource_usage = ray.available_resources() if hasattr(ray, 'available_resources') else {}
+        
+        # Limpiar todos los datos antes de crear la respuesta
+        clean_cluster_resources = clean_for_json(cluster_resources)
+        clean_nodes = clean_for_json(nodes)
+        clean_alive_nodes = clean_for_json(alive_nodes)
+        clean_dead_nodes = clean_for_json(dead_nodes)
+        clean_resource_usage = clean_for_json(resource_usage)
+        
         return ClusterInfo(
             connected=True,
-            resources=cluster_resources,
-            nodes=nodes,
-            alive_nodes=alive_nodes,
-            dead_nodes=dead_nodes,
+            resources=clean_cluster_resources,
+            nodes=clean_nodes,
+            alive_nodes=clean_alive_nodes,
+            dead_nodes=clean_dead_nodes,
             total_cpus=int(cluster_resources.get('CPU', 0)),
-            total_memory=cluster_resources.get('memory', 0),
+            total_memory=clean_for_json(cluster_resources.get('memory', 0)),
             total_gpus=int(cluster_resources.get('GPU', 0)),
             node_count=len(nodes),
             alive_node_count=len(alive_nodes),
             dead_node_count=len(dead_nodes),
-            resource_usage=resource_usage,
+            resource_usage=clean_resource_usage,
             timestamp=time.time()
         )
     except Exception as e:
@@ -912,8 +963,8 @@ async def get_inference_statistics(model_name: Optional[str] = None):
             }
         
         response_data = {
-            "stats": clean_data_for_json(stats),
-            "aggregated": clean_data_for_json(aggregated_stats),
+            "stats": clean_for_json(stats),
+            "aggregated": clean_for_json(aggregated_stats),
             "timestamp": datetime.now().isoformat()
         }
         
@@ -959,7 +1010,7 @@ async def system_status():
             "disk_total": disk.total / (1024**3)  # GB
         }
         
-        return clean_data_for_json(system_data)
+        return clean_for_json(system_data)
     except Exception as e:
         logger.error(f"Error obteniendo estado del sistema: {e}")
         raise HTTPException(status_code=500, detail=f"Error obteniendo estado del sistema: {str(e)}")
@@ -994,30 +1045,6 @@ class TrainingRequest(BaseModel):
     hyperparams: Optional[Dict[str, Dict[str, Any]]] = Field(default={}, description="Hiperparámetros personalizados por modelo")
 
 
-
-def clean_data_for_json(data):
-    """
-    Recursively clean data to ensure JSON compliance by handling NaN, inf, and other problematic values.
-    """
-    if isinstance(data, dict):
-        return {key: clean_data_for_json(value) for key, value in data.items()}
-    elif isinstance(data, list):
-        return [clean_data_for_json(item) for item in data]
-    elif isinstance(data, (np.integer, int)):
-        return int(data)
-    elif isinstance(data, (np.floating, float)):
-        if np.isnan(data) or np.isinf(data):
-            return None
-        return float(data)
-    elif isinstance(data, np.ndarray):
-        cleaned_array = np.nan_to_num(data, nan=None, posinf=None, neginf=None)
-        return cleaned_array.tolist()
-    elif isinstance(data, (complex, np.complex64, np.complex128)):
-        real_part = float(data.real) if np.isfinite(data.real) else None
-        imag_part = float(data.imag) if np.isfinite(data.imag) else None
-        return {"real": real_part, "imag": imag_part}
-    else:
-        return data
 
 @app.post('/train/oneDataset', summary='Entrena varios modelos en el mismo dataset')
 async def train(params: TrainingRequest):
@@ -1076,11 +1103,14 @@ async def list_models():
     """Lista todos los modelos entrenados disponibles con sus métricas"""
     try:
         models = get_available_models()
-        return {
+        result = {
             "total_models": len(models),
             "models": models,
             "timestamp": datetime.now().isoformat()
         }
+        # Doble limpieza para asegurar que no hay valores problemáticos
+        cleaned_result = clean_for_json(result)
+        return cleaned_result
     except Exception as e:
         logger.error(f"Error listando modelos: {e}")
         raise HTTPException(status_code=500, detail=f"Error listando modelos: {str(e)}")
@@ -1143,5 +1173,105 @@ def prepare_prediction_data(features, feature_names=None, model_info=None):
         logger.warning("Usando fallback con ceros")
         return fallback_df
 
+def clean_for_json(obj, path=""):
+    """
+    Limpia recursivamente un objeto para hacerlo JSON-serializable,
+    manejando valores NaN e infinitos de NumPy de manera robusta.
+    """
+    if isinstance(obj, dict):
+        return {k: clean_for_json(v, f"{path}.{k}" if path else k) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [clean_for_json(item, f"{path}[{i}]") for i, item in enumerate(obj)]
+    elif isinstance(obj, np.ndarray):
+        # Convertir array de numpy limpiando valores problemáticos
+        if np.any(np.isnan(obj)) or np.any(np.isinf(obj)):
+            logger.warning(f"Encontrados valores NaN/inf en array en path: {path}")
+        cleaned = np.nan_to_num(obj, nan=0.0, posinf=999999.0, neginf=-999999.0)
+        return cleaned.tolist()
+    elif isinstance(obj, (np.floating, float)):
+        # Verificar múltiples formas de inf/nan
+        try:
+            if np.isnan(obj) or np.isinf(obj):
+                logger.warning(f"Encontrado valor NaN/inf ({obj}) en path: {path}")
+                return None
+            # Intentar convertir a float estándar
+            float_val = float(obj)
+            # Re-verificar después de la conversión
+            if np.isnan(float_val) or np.isinf(float_val):
+                logger.warning(f"Valor se convirtió a NaN/inf ({float_val}) en path: {path}")
+                return None
+            # Verificar rango válido para JSON
+            if abs(float_val) > 1e308:  # Máximo valor float en JSON
+                logger.warning(f"Valor fuera de rango JSON ({float_val}) en path: {path}")
+                return 999999.0 if float_val > 0 else -999999.0
+            return float_val
+        except (ValueError, OverflowError, TypeError) as e:
+            logger.warning(f"Error convirtiendo float ({obj}) en path: {path} - {e}")
+            return None
+    elif isinstance(obj, (np.integer, int)):
+        try:
+            return int(obj)
+        except (ValueError, OverflowError, TypeError):
+            return 0
+    elif isinstance(obj, (np.bool_, bool)):
+        return bool(obj)
+    elif isinstance(obj, str):
+        return obj
+    elif obj is None:
+        return None
+    elif isinstance(obj, (complex, np.complex64, np.complex128)):
+        # Manejar números complejos
+        try:
+            real_part = clean_for_json(obj.real, f"{path}.real")
+            imag_part = clean_for_json(obj.imag, f"{path}.imag")
+            return {"real": real_part, "imag": imag_part}
+        except:
+            return {"real": 0.0, "imag": 0.0}
+    else:
+        # Para otros tipos, intentar convertir a string como fallback
+        try:
+            str_val = str(obj)
+            # Verificar si el string contiene valores problemáticos
+            if 'inf' in str_val.lower() or 'nan' in str_val.lower():
+                logger.warning(f"String contiene inf/nan ({str_val}) en path: {path}")
+                return None
+            return str_val
+        except:
+            return None
+
+@app.get("/debug/check-data", summary="Diagnóstico de datos problemáticos")
+async def debug_check_data():
+    """Endpoint temporal para diagnosticar valores inf/nan en los datos"""
+    try:
+        models = get_available_models()
+        problematic_paths = []
+        
+        def find_problematic_values(obj, path=""):
+            """Busca recursivamente valores problemáticos"""
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    find_problematic_values(v, f"{path}.{k}" if path else k)
+            elif isinstance(obj, (list, tuple)):
+                for i, item in enumerate(obj):
+                    find_problematic_values(item, f"{path}[{i}]")
+            elif isinstance(obj, (np.floating, float)):
+                if np.isnan(obj) or np.isinf(obj):
+                    problematic_paths.append(f"{path}: {obj}")
+            elif isinstance(obj, str):
+                if 'inf' in obj.lower() or 'nan' in obj.lower():
+                    problematic_paths.append(f"{path}: {obj}")
+        
+        find_problematic_values(models, "models")
+        
+        return {
+            "total_models": len(models),
+            "problematic_values_found": len(problematic_paths),
+            "problematic_paths": problematic_paths[:20],  # Limitar a 20 para no saturar
+            "first_model_sample": next(iter(models.items())) if models else None
+        }
+        
+    except Exception as e:
+        logger.error(f"Error en diagnóstico: {e}")
+        return {"error": str(e)}
 if __name__ == "__main__":
     main(8000)

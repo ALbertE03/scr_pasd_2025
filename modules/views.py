@@ -5,6 +5,7 @@ import plotly.graph_objects as go
 import time
 import numpy as np
 import random
+import json
 
 # Configuración de modelos
 CLASSIFICATION_MODELS = [
@@ -360,15 +361,16 @@ def render_training_tab(cluster_status, api_client):
         return
 
     training_tabs = st.tabs([
-        "🚀 Entrenamiento",
-        "🚀 Entrenamiento Avanzado"
+        "🚀 Entrenamiento"
     ])
+       # "🚀 Entrenamiento Avanzado"
+    # ])
     
     with training_tabs[0]:
         render_advanced_training(api_client)
     
-    with training_tabs[1]:
-        render_legacy_training(cluster_status, api_client)
+    #with training_tabs[1]:
+        #render_legacy_training(cluster_status, api_client)
 
 def render_legacy_training(cluster_status, api_client):
     """Renderiza la interfaz de entrenamiento avanzada legacy"""
@@ -665,8 +667,19 @@ def handle_training_execution(df, target_column, problem_type, metrics, test_siz
                              missing_strategy, fill_value, api_client, hyperparams=None):
     """Maneja la ejecución del entrenamiento de forma simplificada"""
     
+    # Mostrar reporte de calidad de datos antes del procesamiento
+    st.markdown("### 📊 Análisis de Calidad de Datos")
+    show_data_quality_report(df)
+    
+    # Preprocesar los datos
     df_processed = preprocess_data(df, missing_strategy, fill_value)
+    
+    # Mostrar reporte después del procesamiento si hubo cambios
+    if not df.equals(df_processed):
+        st.markdown("#### 🔄 Después del preprocesamiento:")
+        show_data_quality_report(df_processed)
 
+    # Validar los datos para entrenamiento
     validation_result = validate_training_data(
         df_processed, target_column, features_to_exclude, 
         problem_type, test_size
@@ -676,6 +689,7 @@ def handle_training_execution(df, target_column, problem_type, metrics, test_siz
         st.error(validation_result['error_message'])
         return
 
+    # Crear parámetros de entrenamiento
     training_params = {
         "df": df_processed,
         "target_column": target_column,
@@ -690,9 +704,27 @@ def handle_training_execution(df, target_column, problem_type, metrics, test_siz
         "dataset_name": dataset_name
     }
     
-
+    # Agregar hiperparámetros si están disponibles
     if hyperparams:
         training_params["hyperparams"] = hyperparams
+    
+    # Limpiar y validar parámetros para JSON
+    st.markdown("### 🧹 Validación de Compatibilidad JSON")
+    cleaned_params = clean_training_params(training_params)
+    
+    if cleaned_params is None:
+        st.error("❌ Error: No se pudieron preparar los datos para el entrenamiento")
+        return
+    
+    # Verificación final de serialización
+    try:
+        # Test de serialización del DataFrame (solo una muestra pequeña)
+        test_sample = cleaned_params['df'].head(5).to_dict('records')
+        json.dumps(test_sample)
+        st.success("✅ Datos validados correctamente para JSON")
+    except Exception as e:
+        st.error(f"❌ Error en validación JSON final: {e}")
+        return
    
     with st.spinner("🔄 Entrenamiento en progreso... (no cierre esta ventana)"):
         try:
@@ -701,7 +733,7 @@ def handle_training_execution(df, target_column, problem_type, metrics, test_siz
                 if configured_models:
                     st.info(f"🔧 Aplicando hiperparámetros personalizados a: {', '.join(configured_models)}")
             
-            response = api_client.start(training_params)
+            response = api_client.start(cleaned_params)
             process_training_response(response, metrics)
             
             if st.session_state.get('train_result'):
@@ -716,10 +748,21 @@ def handle_training_execution(df, target_column, problem_type, metrics, test_siz
             elif st.session_state.get('train_error'):
                 st.error(st.session_state['train_error'])
                 
-              
         except Exception as e:
             st.error(f"❌ Error durante el entrenamiento: {e}")
             st.info("💡 **Sugerencia:** Revisa los hiperparámetros y el formato de los datos")
+            
+            # Mostrar información adicional sobre el error si es de serialización
+            if "JSON" in str(e) or "serializ" in str(e).lower():
+                st.error("🔧 **Error de serialización detectado.** Intenta con una estrategia diferente de manejo de valores faltantes.")
+                
+                # Mostrar muestra de datos problemáticos si es posible
+                with st.expander("🔍 Diagnóstico de Datos"):
+                    st.write("Muestra de los primeros 5 registros:")
+                    st.dataframe(df_processed.head())
+                    
+                    st.write("Tipos de datos:")
+                    st.write(df_processed.dtypes)
 
 def preprocess_data(df, missing_strategy, fill_value):
     """Preprocesa los datos según la estrategia seleccionada"""
@@ -730,9 +773,28 @@ def preprocess_data(df, missing_strategy, fill_value):
     elif missing_strategy == "Rellenar con la media/moda":
         for col in df_processed.columns:
             if pd.api.types.is_numeric_dtype(df_processed[col]):
-                df_processed[col] = df_processed[col].fillna(df_processed[col].mean())
+                # Verificar si hay valores para calcular la media
+                if not df_processed[col].dropna().empty:
+                    mean_val = df_processed[col].mean()
+                    # Verificar que la media no sea NaN o infinita
+                    if pd.isna(mean_val) or np.isinf(mean_val):
+                        st.warning(f"⚠️ Media problemática en columna '{col}', usando 0 como fallback")
+                        df_processed[col] = df_processed[col].fillna(0.0)
+                    else:
+                        df_processed[col] = df_processed[col].fillna(mean_val)
+                else:
+                    st.warning(f"⚠️ Columna '{col}' sin valores válidos, rellenando con 0")
+                    df_processed[col] = df_processed[col].fillna(0.0)
             else:
-                df_processed[col] = df_processed[col].fillna(df_processed[col].mode()[0])
+                # Para columnas categóricas
+                if not df_processed[col].dropna().empty:
+                    mode_val = df_processed[col].mode()
+                    if len(mode_val) > 0:
+                        df_processed[col] = df_processed[col].fillna(mode_val[0])
+                    else:
+                        df_processed[col] = df_processed[col].fillna('Unknown')
+                else:
+                    df_processed[col] = df_processed[col].fillna('Unknown')
     elif missing_strategy == "Rellenar con valor específico":
         try:
             fill_val = float(fill_value) if '.' in fill_value else int(fill_value)
@@ -740,21 +802,36 @@ def preprocess_data(df, missing_strategy, fill_value):
             fill_val = fill_value
         df_processed = df_processed.fillna(fill_val)
     
+    # Limpiar el DataFrame para asegurar compatibilidad JSON
+    df_processed = clean_dataframe_for_json(df_processed)
+    
     return df_processed
 
 def validate_training_data(df_processed, target_column, features_to_exclude, problem_type, test_size):
     """Valida los datos para el entrenamiento"""
 
+    # Verificar valores faltantes
     if df_processed.isna().sum().sum() > 0:
         return {"is_valid": False, "error_message": "⚠️ Aún hay valores faltantes en el dataset. Por favor aplique una estrategia de manejo."}
 
+    # Verificar valores infinitos
+    inf_count = 0
+    for col in df_processed.select_dtypes(include=[np.number]).columns:
+        inf_count += np.isinf(df_processed[col]).sum()
+    
+    if inf_count > 0:
+        return {"is_valid": False, "error_message": f"⚠️ Se encontraron {inf_count} valores infinitos. Por favor aplique preprocesamiento."}
+
+    # Verificar que el target no esté en las características a excluir
     if target_column in features_to_exclude:
         return {"is_valid": False, "error_message": "❌ La columna target no puede estar en las características a excluir."}
 
+    # Verificar tamaño mínimo del dataset
     n_samples = len(df_processed)
     if n_samples < 10:
         return {"is_valid": False, "error_message": "❌ El dataset es demasiado pequeño. Se necesitan al menos 10 muestras."}
   
+    # Validaciones específicas para clasificación
     if problem_type == "Clasificación":
         target_processed = df_processed[target_column]
         class_counts = target_processed.value_counts()
@@ -775,12 +852,22 @@ def validate_training_data(df_processed, target_column, features_to_exclude, pro
                 "error_message": f"❌ **Error:** Con test_size={test_size:.1%}, solo hay {total_test_samples} muestras para test, pero se necesitan al menos {min_test_samples_needed}. Reduce el test_size a máximo {max_test_size:.1%}"
             }
     
-
+    # Verificar que hay características numéricas
     numeric_features = df_processed.select_dtypes(include=[np.number]).columns
     if len(numeric_features) == 0 and target_column not in df_processed.select_dtypes(include=[np.number]).columns:
         return {
             "is_valid": False,
             "error_message": "⚠️ **Advertencia:** No se detectaron características numéricas. Asegúrate de que el dataset sea apropiado para machine learning."
+        }
+    
+    # Verificación de compatibilidad JSON (muestra pequeña)
+    try:
+        sample_data = df_processed.to_dict('records')
+        json.dumps(sample_data)
+    except Exception as e:
+        return {
+            "is_valid": False,
+            "error_message": f"❌ **Error de compatibilidad JSON:** {str(e)}. Los datos contienen valores no serializables."
         }
     
     return {"is_valid": True, "error_message": None}
@@ -946,3 +1033,201 @@ def show_confusion_matrix(model_data, model_index):
     )
     
     st.plotly_chart(fig, use_container_width=True, key=f'confusion_matrix_{model_data["model_name"]}_{model_index}')
+
+def clean_dataframe_for_json(df):
+    """
+    Limpia un DataFrame para asegurar que sea JSON-serializable,
+    manejando valores NaN, infinitos y tipos de datos problemáticos.
+    """
+    df_clean = df.copy()
+    
+    # Reemplazar valores infinitos y NaN
+    df_clean = df_clean.replace([np.inf, -np.inf], np.nan)
+    
+    # Para cada columna, manejar según su tipo
+    for col in df_clean.columns:
+        if df_clean[col].dtype == 'object':
+            # Para columnas de texto, convertir NaN a string vacío
+            df_clean[col] = df_clean[col].fillna('')
+            # Asegurar que todos los valores sean strings
+            df_clean[col] = df_clean[col].astype(str)
+        elif pd.api.types.is_numeric_dtype(df_clean[col]):
+            # Para columnas numéricas
+            if df_clean[col].isna().any():
+                # Si hay NaN, rellenar con 0 como fallback seguro
+                df_clean[col] = df_clean[col].fillna(0.0)
+            
+            # Convertir a float64 estándar para evitar problemas con tipos NumPy
+            if df_clean[col].dtype in ['float16', 'float32']:
+                df_clean[col] = df_clean[col].astype('float64')
+            elif df_clean[col].dtype in ['int8', 'int16', 'int32']:
+                df_clean[col] = df_clean[col].astype('int64')
+        elif pd.api.types.is_bool_dtype(df_clean[col]):
+            # Para columnas booleanas, convertir NaN a False
+            df_clean[col] = df_clean[col].fillna(False)
+        elif pd.api.types.is_datetime64_any_dtype(df_clean[col]):
+            # Para fechas, convertir a string
+            df_clean[col] = df_clean[col].dt.strftime('%Y-%m-%d %H:%M:%S').fillna('')
+        else:
+            # Para otros tipos, convertir a string
+            df_clean[col] = df_clean[col].astype(str).fillna('')
+    
+    return df_clean
+
+def validate_json_serializable(obj, max_depth=3, current_depth=0):
+    """
+    Valida que un objeto sea JSON-serializable de forma recursiva.
+    Retorna True si es serializable, False si no.
+    """
+    if current_depth > max_depth:
+        return True  # Evitar recursión infinita
+    
+    try:
+        if obj is None or isinstance(obj, (bool, int, float, str)):
+            # Verificar valores problemáticos en números
+            if isinstance(obj, float):
+                if np.isnan(obj) or np.isinf(obj):
+                    return False
+            return True
+        elif isinstance(obj, (list, tuple)):
+            return all(validate_json_serializable(item, max_depth, current_depth + 1) for item in obj)
+        elif isinstance(obj, dict):
+            return all(
+                isinstance(k, str) and validate_json_serializable(v, max_depth, current_depth + 1)
+                for k, v in obj.items()
+            )
+        elif isinstance(obj, pd.DataFrame):
+            # Para DataFrames, verificar una muestra pequeña
+            sample_size = min(10, len(obj))
+            sample_df = obj.head(sample_size)
+            return validate_json_serializable(sample_df.to_dict('records'), max_depth, current_depth + 1)
+        elif hasattr(obj, 'tolist'):  # Arrays de NumPy
+            return validate_json_serializable(obj.tolist(), max_depth, current_depth + 1)
+        else:
+            # Intentar serialización directa como test
+            json.dumps(obj)
+            return True
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+def clean_training_params(training_params):
+    """
+    Limpia los parámetros de entrenamiento para asegurar compatibilidad JSON.
+    """
+    cleaned_params = training_params.copy()
+    
+    # Limpiar el DataFrame si existe
+    if 'df' in cleaned_params and isinstance(cleaned_params['df'], pd.DataFrame):
+        st.info("🧹 Limpiando datos para garantizar compatibilidad JSON...")
+        
+        original_shape = cleaned_params['df'].shape
+        cleaned_df = clean_dataframe_for_json(cleaned_params['df'])
+        
+        # Verificar que el DataFrame limpio sea serializable
+        if not validate_json_serializable(cleaned_df):
+            st.error("❌ Error: No se pudo limpiar completamente el DataFrame para JSON")
+            return None
+        
+        cleaned_params['df'] = cleaned_df
+        
+        # Mostrar información sobre la limpieza
+        nan_count_before = training_params['df'].isna().sum().sum()
+        nan_count_after = cleaned_df.isna().sum().sum()
+        
+        if nan_count_before > 0:
+            st.success(f"✅ Limpieza completada: {nan_count_before} valores NaN/infinitos procesados")
+        
+        if original_shape != cleaned_df.shape:
+            st.warning(f"⚠️ El tamaño del dataset cambió: {original_shape} → {cleaned_df.shape}")
+    
+    # Limpiar otros parámetros que puedan tener valores problemáticos
+    for key, value in cleaned_params.items():
+        if key != 'df':
+            if isinstance(value, (np.integer, np.floating)):
+                if np.isnan(value) or np.isinf(value):
+                    cleaned_params[key] = 0 if np.isnan(value) else (999999 if np.isposinf(value) else -999999)
+                else:
+                    cleaned_params[key] = float(value) if isinstance(value, np.floating) else int(value)
+            elif isinstance(value, dict):
+                # Limpiar diccionarios recursivamente (como hyperparams)
+                cleaned_params[key] = clean_dict_for_json(value)
+    
+    return cleaned_params
+
+def clean_dict_for_json(d):
+    """
+    Limpia un diccionario de forma recursiva para JSON.
+    """
+    if not isinstance(d, dict):
+        return d
+    
+    cleaned = {}
+    for key, value in d.items():
+        if isinstance(value, dict):
+            cleaned[key] = clean_dict_for_json(value)
+        elif isinstance(value, (np.integer, np.floating)):
+            if np.isnan(value) or np.isinf(value):
+                cleaned[key] = None
+            else:
+                cleaned[key] = float(value) if isinstance(value, np.floating) else int(value)
+        elif isinstance(value, (list, tuple)):
+            cleaned[key] = [
+                float(item) if isinstance(item, np.floating) else 
+                int(item) if isinstance(item, np.integer) else 
+                None if (isinstance(item, float) and (np.isnan(item) or np.isinf(item))) else 
+                item
+                for item in value
+            ]
+        else:
+            cleaned[key] = value
+    
+    return cleaned
+
+def show_data_quality_report(df):
+    """
+    Muestra un reporte de calidad de los datos.
+    """
+    with st.expander("📋 Reporte de Calidad de Datos", expanded=False):
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.metric("Total de filas", f"{len(df):,}")
+            st.metric("Total de columnas", len(df.columns))
+        
+        with col2:
+            nan_count = df.isna().sum().sum()
+            st.metric("Valores faltantes", f"{nan_count:,}")
+            
+            inf_count = 0
+            for col in df.select_dtypes(include=[np.number]).columns:
+                inf_count += np.isinf(df[col]).sum()
+            st.metric("Valores infinitos", f"{inf_count:,}")
+        
+        with col3:
+            duplicate_count = df.duplicated().sum()
+            st.metric("Filas duplicadas", f"{duplicate_count:,}")
+        
+        # Mostrar detalles por columna si hay problemas
+        if nan_count > 0 or inf_count > 0:
+            st.markdown("#### 🔍 Detalles por columna:")
+            problem_cols = []
+            
+            for col in df.columns:
+                col_nans = df[col].isna().sum()
+                col_infs = 0
+                if pd.api.types.is_numeric_dtype(df[col]):
+                    col_infs = np.isinf(df[col]).sum()
+                
+                if col_nans > 0 or col_infs > 0:
+                    problem_cols.append({
+                        'Columna': col,
+                        'Tipo': str(df[col].dtype),
+                        'NaN': col_nans,
+                        'Infinitos': col_infs,
+                        '% Problemático': f"{((col_nans + col_infs) / len(df) * 100):.1f}%"
+                    })
+            
+            if problem_cols:
+                st.dataframe(pd.DataFrame(problem_cols), use_container_width=True)
+        else:
+            st.success("✅ No se detectaron problemas de calidad en los datos")
