@@ -553,11 +553,11 @@ def render_batch_prediction_mode(api_client: APIClient, selected_model: str, mod
                     if not all(val in [True, False, 'True', 'False', 'true', 'false', 1, 0] for val in unique_vals if pd.notna(val)):
                         validation_errors.append(f"Columna {i+1} ({col_name}): se esperan valores booleanos")
             
-            if validation_errors:
-                st.warning("⚠️ Se encontraron posibles problemas de validación:")
-                for error in validation_errors:
-                    st.write(f"- {error}")
-                st.info("Se intentará convertir automáticamente los tipos de datos durante la predicción.")
+            #if validation_errors:
+                #st.warning("⚠️ Se encontraron posibles problemas de validación:")
+                #for error in validation_errors:
+                    #st.write(f"- {error}")
+                #st.info("Se intentará convertir automáticamente los tipos de datos durante la predicción.")
             
             col1, col2 = st.columns(2)
             return_probabilities = False

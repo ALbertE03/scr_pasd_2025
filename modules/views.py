@@ -473,8 +473,11 @@ def render_advanced_training(api_client):
                 
                 with st.expander("🔍 Vista previa del dataset (primeras 10 filas)"):
                     st.dataframe(df.head(10))
-            
-      
+
+                with st.expander("📊 Estadísticas del Dataset"):
+                    st.write(df.describe())
+                    
+
             st.markdown("---")
             st.markdown("### 🎯 Configuración del Target")
             
@@ -517,7 +520,13 @@ def render_advanced_training(api_client):
                         hyperparams = create_hyperparameter_controls(selected_models_for_hyperparams, "advanced_training")
                 else:
                     st.info("👆 Seleccione modelos arriba para configurar sus hiperparámetros")
-
+            default_index = 0 if st.session_state.get('problem_type_detected') == "Clasificación" else 1
+            problem_type = st.radio(
+                            "Seleccione el tipo de problema:",
+                            options=["Clasificación", "Regresión"],
+                            index=default_index,
+                            key="problem_type_selection"
+                        )
             with st.form("training_form", clear_on_submit=False):
                 col_form1, col_form2 = st.columns([3, 2])
                 
@@ -560,13 +569,7 @@ def render_advanced_training(api_client):
                     if target_column:
                         st.markdown("## ⚙️ Configuración del Modelado")
 
-                        default_index = 0 if st.session_state.get('problem_type_detected') == "Clasificación" else 1
-                        problem_type = st.radio(
-                            "Seleccione el tipo de problema:",
-                            options=["Clasificación", "Regresión"],
-                            index=default_index,
-                            key="problem_type_selection"
-                        )
+                        
 
                         test_size = st.slider(
                             "📊 % para datos de prueba",
